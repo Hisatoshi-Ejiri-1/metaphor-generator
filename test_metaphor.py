@@ -116,7 +116,6 @@ st.markdown("""
     </style>
 """, unsafe_allow_html=True)
 
-# 🗄️ Supabaseクライアントの初期化
 supabase = None
 if SUPABASE_URL and SUPABASE_KEY:
     try:
@@ -127,14 +126,12 @@ if SUPABASE_URL and SUPABASE_KEY:
 if "current_result" not in st.session_state:
     st.session_state.current_result = None
 
-# ⬅️ 左側：タイムライン表示
 with st.sidebar:
     st.markdown('<div class="sidebar-title">WORLD TIMELINE</div>', unsafe_allow_html=True)
     timeline_data = []
     
     if supabase:
         try:
-            # 💡 最新バージョンの仕様に合わせて order("created_at", desc=True) に修正しました！
             response = supabase.table("global_timeline").select("*").order("created_at", desc=True).limit(20).execute()
             timeline_data = response.data
         except Exception as e:
@@ -162,7 +159,6 @@ with st.sidebar:
                     except Exception:
                         st.error("削除に失敗しました。")
 
-# ➡️ 右側：メイン画面
 st.markdown('<div class="main-title">比喩生成システム</div>', unsafe_allow_html=True)
 st.write("あなたの言語化しづらい曖昧な違和感や、日々の特別なエピソードを、文学的な比喩表現へと昇華します！")
 
