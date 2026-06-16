@@ -117,14 +117,14 @@ with st.sidebar:
             st.markdown(f"""
                 <div class="history-item">
                     <span style="color: #3B82F6; font-weight: bold;">Public:</span> 「 {item['metaphor']} 」<br>
-                    <span style="color: #94A3B8; font-size: 11px;">ある人の違和感：{item['input']}</span>
+                    <span style="color: #94A3B8; font-size: 11px;">ある人のエピソード：{item['input']}</span>
                 </div>
             """, unsafe_allow_html=True)
 
 st.markdown('<div class="main-title">比喩生成システム</div>', unsafe_allow_html=True)
-st.write("あなたの言語化しづらい曖昧な違和感を、文学的な比喩表現へと昇華します！")
+st.write("あなたの言語化しづらい曖昧な違和感や、日々の特別なエピソードを、文学的な比喩表現へと昇華します！")
 
-INPUT_TEXT = st.text_area("あなたの違和感を入力してください（100文字以内）", placeholder="例：SNSで他人の充実した投稿を見て、なんとなく焦ってしまう")
+INPUT_TEXT = st.text_area("心に残っている出来事や感情を入力してください（100文字以内）", placeholder="例：テストで良い点数を取れて、心がじわっと温かくなったこと")
 
 SHARE_TO_WORLD = st.checkbox("この比喩表現を、世界（左側のタイムライン）に匿名で共有する", value=True)
 
@@ -136,7 +136,7 @@ if st.button("思考を紡ぐ"):
     elif len(clean_input) > 100:
         st.error(f"100文字以内で入力してください。（現在 {len(clean_input)} 文字）")
     elif len(clean_input) < 5:
-        st.error("もう少し詳しくモヤモヤを教えてください。")
+        st.error("もう少し詳しくエピソードを教えてください。")
     else:
         unique_chars = set(clean_input)
         if len(unique_chars) < 3 or (len(unique_chars) / len(clean_input)) < 0.3:
@@ -161,18 +161,18 @@ if st.button("思考を紡ぐ"):
                         s3_client = boto3.client("s3")
 
                         system_instruction = """
-                        あなたはユーザーの日常のモヤモヤを詩的・前衛的な比喩表現へと昇華させ、その理由をめちゃくちゃフランクに、友達に話しかけるようなテンションで解説するシステムです。
+                        あなたはユーザーの日常のあらゆるエピソード（嬉しかったこと、楽しかったこと、モヤモヤした違和感など）を詩的・前衛的な比喩表現へと昇華させ、その理由をめちゃくちゃフランクに、友達に話しかけるようなテンションで解説するシステムです。
                         必ず指定されたJSONフォーマットのみで出力してください。
 
                         【出力フォーマット】
                         以下のJSONオブジェクトのみを返してください。
                         {
                             "metaphor": "[名詞・形容詞] ＋ [の] ＋ [名詞] みたい",
-                            "explanation": "なぜその比喩になったのか、構造・距離・五感の要素をすべて含めて、フランクに「！」を使いながら1つの文章で解説"
+                            "explanation": "なぜその比喩になったのか、エピソードの感情（喜び、焦り、感動など）の要素をすべて含めて、フランクに「！」を使いながら1つの文章で解説"
                         }
 
                         【生成ロジック・トーン】
-                        1. 比喩はタイトな1行の名詞句（〜みたい）にすること。
+                        1. 比喩はタイトな1行の名詞句（〜みたい）にすること。ネガティブな内容なら鋭く冷徹に、ポジティブな内容なら色彩豊かで美しい比喩を紡ぐこと。
                         2. 解説（explanation）のトーンは「！」をたくさん使い、親しみやすい言葉遣い（〜じゃん！、〜ってこと！、〜だよね！）にすること。
                         3. 「意味の距離」や「構造」といった難しい専門用語は一切使わず、「一見全然関係ないものと結びつけたよ！」や「頭の中のイメージを限界までリアルにした結果！」みたいに、誰でも直感的にわかる表現に噛み砕くこと。
                         """
