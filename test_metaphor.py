@@ -99,28 +99,39 @@ st.markdown("""
     </style>
 """, unsafe_allow_html=True)
 
-if "history" not in st.session_state:
-    st.session_state.history = []
+# 🌐 全ユーザーで1つのタイムライン配列を共有するためのバックエンド裏技
+@st.cache_resource
+def get_global_timeline():
+    return []
 
+global_timeline = get_global_timeline()
+
+if "current_result" not in st.session_state:
+    st.session_state.current_result = None
+
+# ⬅️ 左側：世界タイムライン表示（全ユーザーのデータがここに流れます）
 with st.sidebar:
-    st.markdown('<div class="sidebar-title">HISTORY</div>', unsafe_allow_html=True)
-    if not st.session_state.history:
-        st.write("生成された比喩の履歴がここに表示されます。")
+    st.markdown('<div class="sidebar-title">WORLD TIMELINE</div>', unsafe_allow_html=True)
+    if not global_timeline:
+        st.write("世界中で生成された比喩表現がリアルタイムにここに流れます。")
     else:
-        for item in reversed(st.session_state.history):
+        # 最新の投稿が一番上に来るように逆順で表示
+        for item in reversed(global_timeline):
             st.markdown(f"""
                 <div class="history-item">
-                    <span style="color: #3B82F6; font-weight: bold;">Focus:</span> 「 {item['metaphor']} 」<br>
-                    <span style="color: #94A3B8; font-size: 11px;">{item['input']}</span>
+                    <span style="color: #3B82F6; font-weight: bold;">Public:</span> 「 {item['metaphor']} 」<br>
+                    <span style="color: #94A3B8; font-size: 11px;">ある人の違和感：{item['input']}</span>
                 </div>
             """, unsafe_allow_html=True)
 
+# ➡️ 右側：メイン画面
 st.markdown('<div class="main-title">比喩生成システム</div>', unsafe_allow_html=True)
 st.write("あなたの言語化しづらい曖昧な違和感を、文学的な比喩表現へと昇華します！")
 
 INPUT_TEXT = st.text_area("あなたの違和感を入力してください（100文字以内）", placeholder="例：SNSで他人の充実した投稿を見て、なんとなく焦ってしまう")
 
-SAVE_TO_HISTORY = st.checkbox("今回の生成結果をブラウザの履歴に残す", value=True)
+# 🔒 プライバシーを守りつつ、タイムラインへの共有を選ぶチェックボックス
+SHARE_TO_WORLD = st.checkbox("この比喩表現を、世界（左側のタイムライン）に匿名で共有する", value=True)
 
 if st.button("思考を紡ぐ"):
     clean_input = INPUT_TEXT.strip()
@@ -188,29 +199,22 @@ if st.button("思考を紡ぐ"):
                         distance_reason = data["distance"]
                         sensory_reason = data["sensory"]
 
-                        if SAVE_TO_HISTORY:
-                            st.session_state.history.append({
+                        st.session_state.current_result = {
+                            "metaphor": metaphor_result,
+                            "structure": structure_reason,
+                            "distance": distance_reason,
+                            "sensory": sensory_reason
+                        }
+
+                        # 🔒 ユーザーが許可している場合のみ、全ユーザー共有のタイムラインにデータを突っ込む
+                        if SHARE_TO_WORLD:
+                            global_timeline.append({
                                 "input": clean_input,
                                 "metaphor": metaphor_result
                             })
 
-                        st.markdown(f"""
-                            <div class="result-box">
-                                <div style="color: #64748B; font-size: 11px; font-weight: 700; letter-spacing: 0.2em; margin-bottom: 15px;">ANALYSIS COMPLETED</div>
-                                <div class="result-text">「 {metaphor_result} 」</div>
-                            </div>
-                        """, unsafe_allow_html=True)
-
-                        with st.expander("生成プロセスの解説（なぜこの比喩になったのか）"):
-                            st.markdown(f"**構造の抽出**\n\n{structure_reason}")
-                            st.markdown("---")
-                            st.markdown(f"**意味の距離**\n\n{distance_reason}")
-                            st.markdown("---")
-                            st.markdown(f"**五感の解像度**\n\n{sensory_reason}")
-
                         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
                         file_name = f"{timestamp}.txt"
-
                         s3_save_content = f"【元の入力】\n{clean_input}\n\n【生成比喩】\n{metaphor_result}\n\n【構造】\n{structure_reason}\n\n【距離】\n{distance_reason}\n\n【五感】\n{sensory_reason}"
 
                         s3_client.put_object(
@@ -219,8 +223,25 @@ if st.button("思考を紡ぐ"):
                             Body=s3_save_content.encode("utf-8"),
                             ContentType="text/plain; charset=utf-8",
                         )
-                        
-                        st.caption(f"システムログは正常にクラウドストレージへ同期されました。")
 
                     except Exception as e:
                         st.error(f"エラーが発生しました: {e}")
+
+if st.session_state.current_result:
+    res = st.session_state.current_result
+    
+    st.markdown(f"""
+        <div class="result-box">
+            <div style="color: #64748B; font-size: 11px; font-weight: 700; letter-spacing: 0.2em; margin-bottom: 15px;">ANALYSIS COMPLETED</div>
+            <div class="result-text">「 {res['metaphor']} 」</div>
+        </div>
+    """, unsafe_allow_html=True)
+
+    with st.expander("生成プロセスの解説（なぜこの比喩になったのか）"):
+        st.markdown(f"**構造の抽出**\n\n{res['structure']}")
+        st.markdown("---")
+        st.markdown(f"**意味の距離**\n\n{res['distance']}")
+        st.markdown("---")
+        st.markdown(f"**五感の解像度**\n\n{res['sensory']}")
+    
+    st.caption(f"システムログは正常にクラウドストレージへ同期されました。")
