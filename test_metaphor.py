@@ -1,16 +1,17 @@
 import os
-import boto3
 import json
 from datetime import datetime
 import streamlit as st
 from google import genai
 from google.genai import types
 from dotenv import load_dotenv
+from supabase import create_client, Client
 
 load_dotenv()
 
 GOOGLE_API_KEY = os.getenv("GEMINI_API_KEY")
-S3_BUCKET_NAME = "metaphor-storage-2026"
+SUPABASE_URL = os.getenv("SUPABASE_URL")
+SUPABASE_KEY = os.getenv("SUPABASE_KEY")
 
 st.set_page_config(page_title="比喩生成システム", page_icon="📝", layout="wide")
 
@@ -95,32 +96,67 @@ st.markdown("""
         padding: 12px;
         border-bottom: 1px solid #F1F5F9;
         line-height: 1.6;
+        margin-bottom: 10px;
+    }
+    
+    /* 🗑️ 削除ボタン用の極小スタイリッシュデザイン */
+    .delete-container {
+        text-align: right;
+        margin-top: -5px;
+        margin-bottom: 10px;
+    }
+    div[data-testid="stHorizontalBlock"] button {
+        background: transparent !important;
+        color: #94A3B8 !important;
+        border: 1px solid #E2E8F0 !important;
+        padding: 2px 8px !important;
+        font-size: 11px !important;
+        width: auto !important;
+    }
+    div[data-testid="stHorizontalBlock"] button:hover {
+        color: #EF4444 !important;
+        border-color: #FCA5A5 !important;
+        box-shadow: none !important;
     }
     </style>
 """, unsafe_allow_html=True)
 
-@st.cache_resource
-def get_global_timeline():
-    return []
-
-global_timeline = get_global_timeline()
+# 🗄️ Supabaseクライアントの初期化
+supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
 
 if "current_result" not in st.session_state:
     st.session_state.current_result = None
 
+# ⬅️ 左側：Supabaseデータベースからタイムラインをリアルタイムに取得
 with st.sidebar:
     st.markdown('<div class="sidebar-title">WORLD TIMELINE</div>', unsafe_allow_html=True)
-    if not global_timeline:
+    try:
+        # データベースから最新の投稿20件を取得
+        response = supabase.table("global_timeline").select("*").order("created_at", descending=True).limit(20).execute()
+        timeline_data = response.data
+    except Exception as e:
+        st.error("タイムラインの読み込みに失敗しました。")
+        timeline_data = []
+
+    if not timeline_data:
         st.write("世界中で生成された比喩表現がリアルタイムにここに流れます。")
     else:
-        for item in reversed(global_timeline):
+        for item in timeline_data:
             st.markdown(f"""
                 <div class="history-item">
                     <span style="color: #3B82F6; font-weight: bold;">Public:</span> 「 {item['metaphor']} 」<br>
-                    <span style="color: #94A3B8; font-size: 11px;">ある人のエピソード：{item['input']}</span>
+                    <span style="color: #94A3B8; font-size: 11px;">ある人のエピソード：{item['user_input']}</span>
                 </div>
             """, unsafe_allow_html=True)
+            
+            # 🗑️ 個別削除用の小さなボタンを配置（背番号 ID を元にピンポイントで消す）
+            col1, col2 = st.columns([4, 1])
+            with col2:
+                if st.button("✕ 削除", key=f"del_{item['id']}"):
+                    supabase.table("global_timeline").delete().eq("id", item['id']).execute()
+                    st.rerun()
 
+# ➡️ 右側：メイン画面
 st.markdown('<div class="main-title">比喩生成システム</div>', unsafe_allow_html=True)
 st.write("あなたの言語化しづらい曖昧な違和感や、日々の特別なエピソードを、文学的な比喩表現へと昇華します！")
 
@@ -158,7 +194,6 @@ if st.button("思考を紡ぐ"):
                 with st.spinner("比喩を生成中です..."):
                     try:
                         client = genai.Client(api_key=GOOGLE_API_KEY)
-                        s3_client = boto3.client("s3")
 
                         system_instruction = """
                         あなたはユーザーの日常のあらゆるエピソード（嬉しかったこと、楽しかったこと、モヤモヤした違和感など）を詩的・前衛的な比喩表現へと昇華させ、その理由をめちゃくちゃフランクに、友達に話しかけるようなテンションで解説するシステムです。
@@ -196,22 +231,13 @@ if st.button("思考を紡ぐ"):
                             "explanation": explanation_result
                         }
 
+                        # 🗄️ ユーザーが許可している場合のみ、Supabaseデータベースへデータを挿入
                         if SHARE_TO_WORLD:
-                            global_timeline.append({
-                                "input": clean_input,
-                                "metaphor": metaphor_result
-                            })
-
-                        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-                        file_name = f"{timestamp}.txt"
-                        s3_save_content = f"【元の入力】\n{clean_input}\n\n【生成比喩】\n{metaphor_result}\n\n【解説】\n{explanation_result}"
-
-                        s3_client.put_object(
-                            Bucket=S3_BUCKET_NAME,
-                            Key=file_name,
-                            Body=s3_save_content.encode("utf-8"),
-                            ContentType="text/plain; charset=utf-8",
-                        )
+                            supabase.table("global_timeline").insert({
+                                "user_input": clean_input,
+                                "metaphor": metaphor_result,
+                                "explanation": explanation_result
+                            }).execute()
 
                     except Exception as e:
                         st.error(f"エラーが発生しました: {e}")
@@ -228,5 +254,3 @@ if st.session_state.current_result:
 
     with st.expander("この比喩が生まれたウラ話！"):
         st.write(res['explanation'])
-    
-    st.caption(f"システムログは正常にクラウドストレージへ同期されました。")
