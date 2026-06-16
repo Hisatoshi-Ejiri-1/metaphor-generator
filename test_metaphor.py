@@ -98,45 +98,38 @@ st.markdown("""
         line-height: 1.6;
         margin-bottom: 10px;
     }
-    
-    /* 🗑️ 削除ボタン用の極小スタイリッシュデザイン */
-    .delete-container {
-        text-align: right;
-        margin-top: -5px;
-        margin-bottom: 10px;
-    }
-    div[data-testid="stHorizontalBlock"] button {
-        background: transparent !important;
-        color: #94A3B8 !important;
-        border: 1px solid #E2E8F0 !important;
-        padding: 2px 8px !important;
-        font-size: 11px !important;
-        width: auto !important;
-    }
-    div[data-testid="stHorizontalBlock"] button:hover {
-        color: #EF4444 !important;
-        border-color: #FCA5A5 !important;
-        box-shadow: none !important;
-    }
     </style>
 """, unsafe_allow_html=True)
 
+# 🛠️ 鍵がちゃんと読み込めているか画面で確認するためのデバッグ表示
+with st.sidebar:
+    st.markdown('<div class="sidebar-title">SYSTEM DEBUG</div>', unsafe_allow_html=True)
+    st.write(f"URL取得状態: {'⭕ 成功' if SUPABASE_URL else '❌ 空っぽ（読み込めていません）'}")
+    st.write(f"KEY取得状態: {'⭕ 成功' if SUPABASE_KEY else '❌ 空っぽ（読み込めていません）'}")
+
 # 🗄️ Supabaseクライアントの初期化
-supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
+supabase = None
+if SUPABASE_URL and SUPABASE_KEY:
+    try:
+        supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
+    except Exception as init_err:
+        with st.sidebar:
+            st.error(f"初期化エラー: {init_err}")
 
-if "current_result" not in st.session_state:
-    st.session_state.current_result = None
-
-# ⬅️ 左側：Supabaseデータベースからタイムラインをリアルタイムに取得
+# ⬅️ 左側：タイムライン表示
 with st.sidebar:
     st.markdown('<div class="sidebar-title">WORLD TIMELINE</div>', unsafe_allow_html=True)
-    try:
-        # データベースから最新の投稿20件を取得
-        response = supabase.table("global_timeline").select("*").order("created_at", descending=True).limit(20).execute()
-        timeline_data = response.data
-    except Exception as e:
-        st.error("タイムラインの読み込みに失敗しました。")
-        timeline_data = []
+    timeline_data = []
+    
+    if supabase:
+        try:
+            response = supabase.table("global_timeline").select("*").order("created_at", descending=True).limit(20).execute()
+            timeline_data = response.data
+        except Exception as e:
+            # 💡 ここで「本当の具体的なエラーメッセージ」を画面に出します！
+            st.error(f"詳細エラー原因: {e}")
+    else:
+        st.warning("Supabaseの接続設定が整っていないため、タイムラインをスキップします。")
 
     if not timeline_data:
         st.write("世界中で生成された比喩表現がリアルタイムにここに流れます。")
@@ -149,12 +142,14 @@ with st.sidebar:
                 </div>
             """, unsafe_allow_html=True)
             
-            # 🗑️ 個別削除用の小さなボタンを配置（背番号 ID を元にピンポイントで消す）
             col1, col2 = st.columns([4, 1])
             with col2:
                 if st.button("✕ 削除", key=f"del_{item['id']}"):
-                    supabase.table("global_timeline").delete().eq("id", item['id']).execute()
-                    st.rerun()
+                    try:
+                        supabase.table("global_timeline").delete().eq("id", item['id']).execute()
+                        st.rerun()
+                    except Exception as del_err:
+                        st.error(f"削除エラー: {del_err}")
 
 # ➡️ 右側：メイン画面
 st.markdown('<div class="main-title">比喩生成システム</div>', unsafe_allow_html=True)
@@ -209,7 +204,7 @@ if st.button("思考を紡ぐ"):
                         【生成ロジック・トーン】
                         1. 比喩はタイトな1行の名詞句（〜みたい）にすること。ネガティブな内容なら鋭く冷徹に、ポジティブな内容なら色彩豊かで美しい比喩を紡ぐこと。
                         2. 解説（explanation）のトーンは「！」をたくさん使い、親しみやすい言葉遣い（〜じゃん！、〜ってこと！、〜だよね！）にすること。
-                        3. 「意味の距離」や「構造」といった難しい専門用語は一切使わず、「一見全然関係ないものと結びつけたよ！」や「頭の中のイメージを限界までリアルにした結果！」みたいに、誰でも直感的にわかる表現に噛み砕くこと。
+                        3. 「意味の距離」や「構造」といった難しい専門用語は一切使わず、「一見全然関係ないものと結け入れたよ！」や「頭の中のイメージを限界までリアルにした結果！」みたいに、誰でも直感的にわかる表現に噛み砕くこと。
                         """
 
                         response = client.models.generate_content(
@@ -231,8 +226,7 @@ if st.button("思考を紡ぐ"):
                             "explanation": explanation_result
                         }
 
-                        # 🗄️ ユーザーが許可している場合のみ、Supabaseデータベースへデータを挿入
-                        if SHARE_TO_WORLD:
+                        if SHARE_TO_WORLD and supabase:
                             supabase.table("global_timeline").insert({
                                 "user_input": clean_input,
                                 "metaphor": metaphor_result,
@@ -252,5 +246,5 @@ if st.session_state.current_result:
         </div>
     """, unsafe_allow_html=True)
 
-    with st.expander("この比喩が生まれたウラ話！"):
+    with st.expander("なぜこの比喩なの？？"):
         st.write(res['explanation'])
