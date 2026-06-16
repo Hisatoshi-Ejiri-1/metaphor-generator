@@ -99,7 +99,6 @@ st.markdown("""
     </style>
 """, unsafe_allow_html=True)
 
-# 🌐 全ユーザーで1つのタイムライン配列を共有するためのバックエンド裏技
 @st.cache_resource
 def get_global_timeline():
     return []
@@ -109,13 +108,11 @@ global_timeline = get_global_timeline()
 if "current_result" not in st.session_state:
     st.session_state.current_result = None
 
-# ⬅️ 左側：世界タイムライン表示（全ユーザーのデータがここに流れます）
 with st.sidebar:
     st.markdown('<div class="sidebar-title">WORLD TIMELINE</div>', unsafe_allow_html=True)
     if not global_timeline:
         st.write("世界中で生成された比喩表現がリアルタイムにここに流れます。")
     else:
-        # 最新の投稿が一番上に来るように逆順で表示
         for item in reversed(global_timeline):
             st.markdown(f"""
                 <div class="history-item">
@@ -124,13 +121,11 @@ with st.sidebar:
                 </div>
             """, unsafe_allow_html=True)
 
-# ➡️ 右側：メイン画面
 st.markdown('<div class="main-title">比喩生成システム</div>', unsafe_allow_html=True)
 st.write("あなたの言語化しづらい曖昧な違和感を、文学的な比喩表現へと昇華します！")
 
 INPUT_TEXT = st.text_area("あなたの違和感を入力してください（100文字以内）", placeholder="例：SNSで他人の充実した投稿を見て、なんとなく焦ってしまう")
 
-# 🔒 プライバシーを守りつつ、タイムラインへの共有を選ぶチェックボックス
 SHARE_TO_WORLD = st.checkbox("この比喩表現を、世界（左側のタイムライン）に匿名で共有する", value=True)
 
 if st.button("思考を紡ぐ"):
@@ -160,27 +155,26 @@ if st.button("思考を紡ぐ"):
                         break
             
             if not has_ng_word:
-                with st.spinner("思考を整理し、言葉の距離を測定しています..."):
+                with st.spinner("比喩を生成中です..."):
                     try:
                         client = genai.Client(api_key=GOOGLE_API_KEY)
                         s3_client = boto3.client("s3")
 
                         system_instruction = """
-                        あなたはユーザーの日常のモヤモヤを詩的・前衛的な比喩表現へと昇華させ、その理由をロジカルに解説するシステムです。
+                        あなたはユーザーの日常のモヤモヤを詩的・前衛的な比喩表現へと昇華させ、その理由をめちゃくちゃフランクに、友達に話しかけるようなテンションで解説するシステムです。
                         必ず指定されたJSONフォーマットのみで出力してください。
 
                         【出力フォーマット】
                         以下のJSONオブジェクトのみを返してください。
                         {
                             "metaphor": "[名詞・形容詞] ＋ [の] ＋ [名詞] みたい",
-                            "structure": "状況の骨組みについての解説",
-                            "distance": "概念の衝突についての解説",
-                            "sensory": "五感の解像度についての解説"
+                            "explanation": "なぜその比喩になったのか、構造・距離・五感の要素をすべて含めて、フランクに「！」を使いながら1つの文章で解説"
                         }
 
-                        【生成ロジック】
+                        【生成ロジック・トーン】
                         1. 比喩はタイトな1行の名詞句（〜みたい）にすること。
-                        2. 解説は文学的かつ冷徹なトーンで、各項目2行程度で記述すること。
+                        2. 解説（explanation）のトーンは「！」をたくさん使い、親しみやすい言葉遣い（〜じゃん！、〜ってこと！、〜だよね！）にすること。
+                        3. 「意味の距離」や「構造」といった難しい専門用語は一切使わず、「一見全然関係ないものと結びつけたよ！」や「頭の中のイメージを限界までリアルにした結果！」みたいに、誰でも直感的にわかる表現に噛み砕くこと。
                         """
 
                         response = client.models.generate_content(
@@ -188,25 +182,20 @@ if st.button("思考を紡ぐ"):
                             contents=clean_input,
                             config=types.GenerateContentConfig(
                                 system_instruction=system_instruction,
-                                temperature=0.8,
+                                temperature=0.85,
                                 response_mime_type="application/json"
                             ),
                         )
                         
                         data = json.loads(response.text.strip())
                         metaphor_result = data["metaphor"]
-                        structure_reason = data["structure"]
-                        distance_reason = data["distance"]
-                        sensory_reason = data["sensory"]
+                        explanation_result = data["explanation"]
 
                         st.session_state.current_result = {
                             "metaphor": metaphor_result,
-                            "structure": structure_reason,
-                            "distance": distance_reason,
-                            "sensory": sensory_reason
+                            "explanation": explanation_result
                         }
 
-                        # 🔒 ユーザーが許可している場合のみ、全ユーザー共有のタイムラインにデータを突っ込む
                         if SHARE_TO_WORLD:
                             global_timeline.append({
                                 "input": clean_input,
@@ -215,7 +204,7 @@ if st.button("思考を紡ぐ"):
 
                         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
                         file_name = f"{timestamp}.txt"
-                        s3_save_content = f"【元の入力】\n{clean_input}\n\n【生成比喩】\n{metaphor_result}\n\n【構造】\n{structure_reason}\n\n【距離】\n{distance_reason}\n\n【五感】\n{sensory_reason}"
+                        s3_save_content = f"【元の入力】\n{clean_input}\n\n【生成比喩】\n{metaphor_result}\n\n【解説】\n{explanation_result}"
 
                         s3_client.put_object(
                             Bucket=S3_BUCKET_NAME,
@@ -237,11 +226,7 @@ if st.session_state.current_result:
         </div>
     """, unsafe_allow_html=True)
 
-    with st.expander("生成プロセスの解説（なぜこの比喩になったのか）"):
-        st.markdown(f"**構造の抽出**\n\n{res['structure']}")
-        st.markdown("---")
-        st.markdown(f"**意味の距離**\n\n{res['distance']}")
-        st.markdown("---")
-        st.markdown(f"**五感の解像度**\n\n{res['sensory']}")
+    with st.expander("この比喩が生まれたウラ話！"):
+        st.write(res['explanation'])
     
     st.caption(f"システムログは正常にクラウドストレージへ同期されました。")
