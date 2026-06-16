@@ -116,11 +116,11 @@ with st.sidebar:
             """, unsafe_allow_html=True)
 
 st.markdown('<div class="main-title">比喩生成システム</div>', unsafe_allow_html=True)
-st.write("日常における言語化できない曖昧な違和感を抽出し、文学的なキレ味を持つ比喩表現へと昇華させ、その思考の輪郭を可視化します。")
+st.write("あなたの言語化しづらい曖昧な違和感を、文学的な比喩表現へと昇華します！")
 
-INPUT_TEXT = st.text_area("心に浮かんでいる違和感を入力してください（100文字以内）", placeholder="例：SNSで他人の充実した投稿を見て、なんとなく焦ってしまう")
+INPUT_TEXT = st.text_area("あなたの違和感を入力してください（100文字以内）", placeholder="例：SNSで他人の充実した投稿を見て、なんとなく焦ってしまう")
 
-SAVE_TO_HISTORY = st.checkbox("今回の生成結果をブラウザの履歴（HISTORY）に残す", value=True)
+SAVE_TO_HISTORY = st.checkbox("今回の生成結果をブラウザの履歴に残す", value=True)
 
 if st.button("思考を紡ぐ"):
     clean_input = INPUT_TEXT.strip()
