@@ -166,7 +166,7 @@ INPUT_TEXT = st.text_area("心に残っている出来事や感情を入力し�
 
 SHARE_TO_WORLD = st.checkbox("この比喩表現を、世界（左側のタイムライン）に匿名で共有する", value=True)
 
-if st.button("思考を紡ぐ"):
+if st.button("比喩を生成"):
     clean_input = INPUT_TEXT.strip()
 
     if not clean_input:
