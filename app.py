@@ -16,9 +16,27 @@ from supabase import create_client, Client
 
 load_dotenv()
 
-GOOGLE_API_KEY = os.getenv("GEMINI_API_KEY")
-SUPABASE_URL = os.getenv("SUPABASE_URL")
-SUPABASE_KEY = os.getenv("SUPABASE_KEY")
+
+
+def setting(name):
+    """環境変数（.env）→ Streamlit の Secrets の順に探す。Secrets は見出しの下に入っていても見つける"""
+    value = os.getenv(name)
+    if value:
+        return value
+    try:
+        if name in st.secrets:
+            return str(st.secrets[name])
+        for section in st.secrets.values():
+            if hasattr(section, "get") and section.get(name):
+                return str(section.get(name))
+    except Exception:  # Secrets が未設定の環境
+        pass
+    return None
+
+
+GOOGLE_API_KEY = setting("GEMINI_API_KEY")
+SUPABASE_URL = setting("SUPABASE_URL")
+SUPABASE_KEY = setting("SUPABASE_KEY")
 
 TABLE = "global_timeline"
 APP_URL = os.getenv("APP_URL", "https://metaphor-generator.streamlit.app/")
@@ -217,10 +235,15 @@ def note(text, alert=False):
 # ---------- Supabase ----------
 
 @st.cache_resource
+def _supabase_client(url, key):
+    return create_client(url, key)
+
+
 def get_supabase():
+    """「未設定」の結果は覚えない。Secrets を後から入れても、次の表示から接続できる"""
     if not (SUPABASE_URL and SUPABASE_KEY):
         return None
-    return create_client(SUPABASE_URL, SUPABASE_KEY)
+    return _supabase_client(SUPABASE_URL, SUPABASE_KEY)
 
 
 @st.cache_data(ttl=30, show_spinner=False)
