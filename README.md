@@ -6,7 +6,7 @@
 ## 🚀 公開URL
 
 世界公開を完了しました！PC・スマホどちらからでも24時間アクセス可能です。
-* **Production:** https://hisatoshi-ejiri-1-metaphor-generator-test-metaphor-dam6hx.streamlit.app/
+* **Production:** https://metaphor-generator.streamlit.app/
 
 ## 📸 画面イメージ
 
