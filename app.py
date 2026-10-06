@@ -21,7 +21,7 @@ SUPABASE_URL = os.getenv("SUPABASE_URL")
 SUPABASE_KEY = os.getenv("SUPABASE_KEY")
 
 TABLE = "global_timeline"
-APP_URL = os.getenv("APP_URL", "https://hisatoshi-ejiri-1-metaphor-generator-test-metaphor-dam6hx.streamlit.app/")
+APP_URL = os.getenv("APP_URL", "https://metaphor-generator.streamlit.app/")
 MAX_LEN = 100
 NG_WORDS_FILE = "ng_words.txt"
 
