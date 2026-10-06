@@ -38,6 +38,14 @@ GOOGLE_API_KEY = setting("GEMINI_API_KEY")
 SUPABASE_URL = setting("SUPABASE_URL")
 SUPABASE_KEY = setting("SUPABASE_KEY")
 
+# 使うモデル。Secrets の GEMINI_MODEL で変えられる（コードを書き換えずに切り替えるため）
+GEMINI_MODEL = setting("GEMINI_MODEL") or "gemini-2.5-flash"
+# メインのモデルが提供終了（404）だったときに、順に試す予備のモデル（カンマ区切り）
+GEMINI_FALLBACK_MODELS = [
+    m.strip() for m in (setting("GEMINI_FALLBACK_MODELS") or "gemini-3.8-flash,gemini-3.5-flash-lite").split(",")
+    if m.strip()
+]
+
 TABLE = "global_timeline"
 APP_URL = os.getenv("APP_URL", "https://metaphor-generator.streamlit.app/")
 MAX_LEN = 100
@@ -381,6 +389,8 @@ def call_with_retry(fn):
 def explain_generate_error(e):
     """例外から、画面に出す文言を決める"""
     code = getattr(e, "code", None)
+    if code == 404:
+        return "生成に使うモデルが使えなくなっています。管理者に連絡してください。"
     if code == 429:
         return "いまは生成の上限に達しています。しばらく（長いときは翌日まで）待ってから、もう一度押してください。"
     if isinstance(e, errors.ServerError):
@@ -396,15 +406,25 @@ def generate_metaphor(text, avoid=None):
     if avoid:
         contents += f"\n\n（前回は「{avoid}」という比喩でした。これとは違うものに例えてください）"
     client = genai.Client(api_key=GOOGLE_API_KEY)
-    response = call_with_retry(lambda: client.models.generate_content(
-        model="gemini-2.5-flash",
-        contents=contents,
-        config=types.GenerateContentConfig(
-            system_instruction=SYSTEM_INSTRUCTION,
-            temperature=0.85,
-            response_mime_type="application/json",
-        ),
-    ))
+    config = types.GenerateContentConfig(
+        system_instruction=SYSTEM_INSTRUCTION,
+        temperature=0.85,
+        response_mime_type="application/json",
+    )
+    response = None
+    for i, model in enumerate([GEMINI_MODEL] + GEMINI_FALLBACK_MODELS):
+        try:
+            response = call_with_retry(lambda: client.models.generate_content(
+                model=model, contents=contents, config=config,
+            ))
+            if i > 0:
+                log(f"[generate] {GEMINI_MODEL} が使えないため {model} で生成しました。GEMINI_MODEL の更新を検討してください")
+            break
+        except errors.ClientError as e:
+            # 404 = モデルが見つからない（提供終了など）。それ以外のエラーはそのまま上げる
+            if e.code != 404 or i == len(GEMINI_FALLBACK_MODELS):
+                raise
+            log(f"[generate] {model} が見つかりません（404）。予備のモデルを試します")
     data = json.loads(response.text.strip())
     metaphor = str(data.get("metaphor", "")).strip()
     explanation = str(data.get("explanation", "")).strip()
