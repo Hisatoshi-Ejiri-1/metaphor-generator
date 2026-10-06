@@ -18,119 +18,150 @@ TABLE = "global_timeline"
 MAX_LEN = 100
 NG_WORDS_FILE = "ng_words.txt"
 
-st.set_page_config(page_title="比喩生成システム", page_icon="📝", layout="centered")
+st.set_page_config(page_title="比喩生成システム", page_icon="☕", layout="wide")
+
+# ---------- ピクセルアート ----------
+# 1文字 = 1マス。好きな絵に描き換えられます（行の長さはそろえる）
+#   k: 紺（線）  b: 空色  l: 薄い青（湯気）  w: 白  . : 透明
+PIXEL_ART = [
+    "....l..l........",
+    "...l..l.........",
+    "....l..l........",
+    "...l..l.........",
+    "................",
+    ".kkkkkkkkkk.....",
+    ".kwwwwwwwwkkkk..",
+    ".kwwbbwbbwk..k..",
+    ".kwwbbbbbwk..k..",
+    ".kwwwbbbwwk..k..",
+    ".kwwwwbwwwkkkk..",
+    ".kwwwwwwwwk.....",
+    "..kwwwwwwk......",
+    "...kkkkkk.......",
+    "kkkkkkkkkkkkkk..",
+    "................",
+]
+PIXEL_COLORS = {"k": "#1B2A3D", "b": "#1185FE", "l": "#A9CCF7", "w": "#FFFFFF"}
+
+
+def pixel_svg(rows, size=4):
+    h, w = len(rows), max(len(r) for r in rows)
+    rects = "".join(
+        f'<rect x="{x}" y="{y}" width="1" height="1" fill="{PIXEL_COLORS[c]}"/>'
+        for y, row in enumerate(rows) for x, c in enumerate(row) if c in PIXEL_COLORS
+    )
+    return (f'<svg class="pixel" viewBox="0 0 {w} {h}" width="{w*size}" height="{h*size}" '
+            f'shape-rendering="crispEdges" aria-hidden="true">{rects}</svg>')
+
 
 st.markdown("""
 <style>
-@import url('https://fonts.googleapis.com/css2?family=Shippori+Mincho:wght@400;600&family=Zen+Kaku+Gothic+New:wght@400;500&display=swap');
+@import url('https://fonts.googleapis.com/css2?family=Klee+One:wght@400;600&family=Zen+Maru+Gothic:wght@400;500;700&display=swap');
 
 :root {
-    --paper: #FFFFFF;
-    --ink: #26272B;
-    --muted: #7A7C82;
-    --faint: #A9AAAE;
-    --rule: #E6E6E3;
-    --alert: #9B3B2E;
+    --sky: #1185FE;
+    --sky-deep: #0A6BD6;
+    --mist: #EEF5FF;
+    --line: #A9CCF7;
+    --ink: #1B2A3D;
+    --muted: #6B7A8F;
+    --alert: #C2453A;
 }
 
-/* Streamlit 標準の飾りを消す */
 header[data-testid="stHeader"], [data-testid="stToolbar"], footer, #MainMenu,
 [data-testid="stSidebar"], [data-testid="collapsedControl"] { display: none !important; }
 
-.stApp { background: var(--paper); color: var(--ink); }
-.stApp, .stApp p, .stApp label, .stApp textarea, .stApp button, .stApp li {
-    font-family: 'Zen Kaku Gothic New', sans-serif;
+.stApp { background: #FFFFFF; color: var(--ink); }
+.stApp, .stApp p, .stApp label, .stApp textarea, .stApp button {
+    font-family: 'Zen Maru Gothic', sans-serif;
 }
-.block-container { max-width: 36rem; padding: 5rem 1.25rem 6rem; }
+.block-container { max-width: 68rem; padding: 3.5rem 1.5rem 5rem; }
 
-.title {
-    font-family: 'Shippori Mincho', serif;
+/* 見出し：手書き風＋ゆがんだ下線 */
+.brand { display: flex; align-items: flex-end; gap: 1rem; margin-bottom: 0.5rem; }
+.pixel { image-rendering: pixelated; flex-shrink: 0; }
+.stApp .title {
+    font-family: 'Klee One', serif;
     font-weight: 600;
-    font-size: 1.5rem;
-    letter-spacing: 0.04em;
-    margin: 0 0 0.75rem;
+    font-size: 1.9rem !important;
+    line-height: 1.3 !important;
     color: var(--ink);
+    margin: 0;
 }
-.lead { color: var(--muted); font-size: 0.9rem; line-height: 1.9; margin-bottom: 2.5rem; }
+.squiggle { display: block; width: 11rem; height: 10px; margin-top: 2px; }
+.stApp .lead { color: var(--muted); font-size: 0.92rem !important; line-height: 1.9; margin: 1rem 0 2.5rem; }
 
-/* 入力欄：下線だけ */
-.stTextArea label p { font-size: 0.85rem; color: var(--muted); }
-.stTextArea [data-baseweb="textarea"] {
-    border: none !important;
-    border-bottom: 1px solid #D4D4D1 !important;
-    border-radius: 0 !important;
-    background: transparent !important;
+/* 注文票：手描きっぽい枠 */
+.st-key-order {
+    background: var(--mist);
+    border: 1.5px solid var(--line);
+    border-radius: 255px 14px 225px 14px / 14px 225px 14px 255px;
+    padding: 1.6rem 1.6rem 1.4rem;
 }
-.stTextArea [data-baseweb="textarea"]:focus-within { border-bottom-color: var(--ink) !important; }
-.stTextArea textarea {
-    background: transparent !important;
-    font-size: 1rem !important;
-    line-height: 1.9 !important;
-    padding: 0.5rem 0 !important;
-    color: var(--ink) !important;
-}
-.stCheckbox label p { font-size: 0.85rem; color: var(--muted); }
+.st-key-order .stTextArea label p { font-family: 'Klee One', serif; font-size: 1rem; color: var(--ink); }
+.st-key-order [data-baseweb="textarea"] { border: none !important; border-radius: 10px !important; background: #FFFFFF !important; }
+.st-key-order textarea { background: #FFFFFF !important; font-size: 1rem !important; line-height: 1.8 !important; color: var(--ink) !important; }
+.st-key-order .stCheckbox label p { font-size: 0.85rem; color: var(--muted); }
 
-/* 生成ボタン */
 .st-key-generate button {
-    background: var(--ink);
+    background: var(--sky);
     color: #FFFFFF;
     border: none;
-    border-radius: 2px;
+    border-radius: 999px;
     padding: 0.55rem 1.8rem;
-    font-weight: 500;
-    letter-spacing: 0.08em;
+    font-weight: 700;
 }
-.st-key-generate button:hover { background: #45474D; color: #FFFFFF; }
-.st-key-generate button:focus-visible { outline: 2px solid var(--ink); outline-offset: 3px; }
+.st-key-generate button:hover { background: var(--sky-deep); color: #FFFFFF; }
+.st-key-generate button:focus-visible { outline: 2px solid var(--sky); outline-offset: 3px; }
 
-/* 結果：ここだけ大きく */
-.metaphor {
-    font-family: 'Shippori Mincho', serif;
-    font-size: clamp(1.6rem, 5.5vw, 2.25rem);
+/* 結果カード：テーブルに置いたように少し傾ける */
+.card {
+    background: #FFFFFF;
+    border: 1.5px solid var(--ink);
+    border-radius: 14px 225px 14px 255px / 255px 14px 225px 14px;
+    padding: 2rem 1.8rem 1.6rem;
+    margin: 2.5rem 0.5rem 1rem;
+    transform: rotate(-1.2deg);
+    box-shadow: 5px 6px 0 var(--mist);
+    animation: settle 0.6s ease-out both;
+}
+.stApp .metaphor {
+    font-family: 'Klee One', serif;
+    font-size: clamp(1.5rem, 4.5vw, 2rem) !important;
     line-height: 1.6;
     color: var(--ink);
-    margin: 4rem 0 1.5rem;
-    animation: appear 0.9s ease-out both;
 }
-.explanation { color: #5E6066; font-size: 0.92rem; line-height: 2; }
-@keyframes appear { from { opacity: 0; } to { opacity: 1; } }
-@media (prefers-reduced-motion: reduce) { .metaphor { animation: none; } }
+.stApp .explanation { color: var(--muted); font-size: 0.9rem !important; line-height: 1.95; margin-top: 1rem; }
+@keyframes settle { from { opacity: 0; transform: rotate(-4deg) translateY(-8px); } to { opacity: 1; transform: rotate(-1.2deg); } }
+@media (prefers-reduced-motion: reduce) { .card { animation: none; } }
 
-/* みんなの比喩 */
-.tl-heading {
-    font-size: 0.95rem;
-    font-weight: 500;
+/* みんなの比喩：小さなメモが並ぶ */
+.stApp .tl-heading {
+    font-family: 'Klee One', serif;
+    font-weight: 600;
+    font-size: 1.15rem !important;
     color: var(--ink);
-    margin: 5rem 0 0.5rem;
-    padding-top: 2rem;
-    border-top: 1px solid var(--rule);
+    margin: 0 0 1rem;
 }
-.tl-metaphor { font-family: 'Shippori Mincho', serif; font-size: 1.05rem; line-height: 1.8; color: var(--ink); margin-top: 1.25rem; }
-.tl-source { font-size: 0.8rem; line-height: 1.7; color: var(--faint); }
-.note { font-size: 0.85rem; color: var(--muted); }
-.note.alert { color: var(--alert); }
+.memo {
+    border-bottom: 1.5px dashed var(--line);
+    padding: 0.9rem 0.2rem 0.8rem;
+}
+.stApp .tl-metaphor { font-family: 'Klee One', serif; font-size: 1.05rem !important; line-height: 1.7; color: var(--ink); }
+.stApp .tl-source { font-size: 0.78rem !important; line-height: 1.7; color: var(--muted); margin-top: 0.2rem; }
+.stApp .note { font-size: 0.85rem !important; color: var(--muted); margin-top: 0.6rem; }
+.stApp .note.alert { color: var(--alert); }
 
 [class*="st-key-del_"] button {
-    background: transparent;
-    border: none;
-    color: var(--faint);
-    font-size: 0.8rem;
-    padding: 0;
-    min-height: 0;
+    background: transparent; border: none; color: var(--muted);
+    font-size: 0.78rem; padding: 0; min-height: 0;
 }
 [class*="st-key-del_"] button:hover { color: var(--alert); background: transparent; }
-
-/* Streamlit 標準スタイルより優先させる */
-.stApp .title { font-size: 1.5rem !important; line-height: 1.5 !important; }
-.stApp .lead { font-size: 0.9rem !important; }
-.stApp .metaphor { font-size: clamp(1.6rem, 5.5vw, 2.25rem) !important; }
-.stApp .tl-heading { font-size: 0.95rem !important; }
-.stApp .tl-metaphor { font-size: 1.05rem !important; }
-.stApp .tl-source { font-size: 0.8rem !important; }
-.stApp .stTextArea [data-baseweb="textarea"] > div,
-.stApp .stTextArea [data-baseweb="base-input"] { background: transparent !important; }
 .stApp .stMarkdown { margin-bottom: 0 !important; }
+
+@media (min-width: 900px) {
+    .st-key-timeline { padding-left: 2rem; border-left: 1.5px dashed var(--line); }
+}
 </style>
 """, unsafe_allow_html=True)
 
@@ -248,86 +279,97 @@ if "current_result" not in st.session_state:
 if "my_post_ids" not in st.session_state:
     st.session_state.my_post_ids = set()
 
-st.markdown('<div class="title">比喩生成システム</div>', unsafe_allow_html=True)
+SQUIGGLE = ('<svg class="squiggle" viewBox="0 0 176 10" preserveAspectRatio="none" aria-hidden="true">'
+            '<path d="M2 6 C 20 2, 34 9, 52 5 S 88 2, 104 6 S 140 9, 158 4 S 170 5, 174 6" '
+            'fill="none" stroke="#1185FE" stroke-width="2.2" stroke-linecap="round"/></svg>')
+
 st.markdown(
-    '<div class="lead">うまく言葉にできない違和感や、忘れたくない小さなできごとを、一行の比喩にします。</div>',
+    f'<div class="brand">{pixel_svg(PIXEL_ART)}<div><div class="title">比喩生成システム</div>{SQUIGGLE}</div></div>'
+    '<div class="lead">うまく言葉にできない違和感や、忘れたくない小さなできごとを、一行の比喩にしてお出しします。</div>',
     unsafe_allow_html=True,
 )
 
-input_text = st.text_area(
-    "できごとや気持ち",
-    max_chars=MAX_LEN,
-    placeholder="例：テストで良い点数を取れて、心がじわっと温かくなった",
-)
-share = st.checkbox("みんなの比喩に匿名で載せる", value=True)
+left, right = st.columns([3, 2], gap="large")
 
-if st.button("比喩にする", key="generate"):
-    clean_input = input_text.strip()
-    problem = validate(clean_input)
-    if problem:
-        note(problem, alert=True)
-    elif not GOOGLE_API_KEY:
-        note("生成に必要な設定（GEMINI_API_KEY）がありません。管理者に連絡してください。", alert=True)
-    else:
-        with st.spinner("比喩を考えています…"):
-            try:
-                metaphor, explanation = generate_metaphor(clean_input)
-            except json.JSONDecodeError:
-                metaphor = None
-                note("うまく比喩にできませんでした。もう一度「比喩にする」を押してください。", alert=True)
-            except Exception as e:
-                print(f"[generate] {type(e).__name__}: {e}")
-                metaphor = None
-                note("比喩の生成に失敗しました。少し時間をおいて、もう一度押してください。", alert=True)
+with left:
+    with st.container(key="order"):
+        input_text = st.text_area(
+            "きょうのできごと",
+            max_chars=MAX_LEN,
+            placeholder="例：テストで良い点数を取れて、心がじわっと温かくなった",
+        )
+        share = st.checkbox("みんなの比喩に匿名で載せる", value=True)
+        clicked = st.button("比喩にする", key="generate")
 
-        if metaphor:
-            st.session_state.current_result = {"metaphor": metaphor, "explanation": explanation}
-            if share and get_supabase():
+    if clicked:
+        clean_input = input_text.strip()
+        problem = validate(clean_input)
+        if problem:
+            note(problem, alert=True)
+        elif not GOOGLE_API_KEY:
+            note("生成に必要な設定（GEMINI_API_KEY）がありません。管理者に連絡してください。", alert=True)
+        else:
+            metaphor = None
+            with st.spinner("比喩を考えています…"):
                 try:
-                    post_id = post_to_timeline(clean_input, metaphor, explanation)
-                    if post_id is not None:
-                        st.session_state.my_post_ids.add(post_id)
+                    metaphor, explanation = generate_metaphor(clean_input)
+                except json.JSONDecodeError:
+                    note("うまく比喩にできませんでした。もう一度「比喩にする」を押してください。", alert=True)
                 except Exception as e:
-                    print(f"[insert] {type(e).__name__}: {e}")
-                    st.session_state.share_failed = True
+                    print(f"[generate] {type(e).__name__}: {e}")
+                    note("比喩の生成に失敗しました。少し時間をおいて、もう一度押してください。", alert=True)
 
-if st.session_state.current_result:
-    res = st.session_state.current_result
-    st.markdown(f'<div class="metaphor">{html.escape(res["metaphor"])}</div>', unsafe_allow_html=True)
-    if res["explanation"]:
-        st.markdown(f'<div class="explanation">{html.escape(res["explanation"])}</div>', unsafe_allow_html=True)
-    if st.session_state.pop("share_failed", False):
-        note("比喩はできましたが、みんなの比喩には載せられませんでした。")
-
-# ---------- みんなの比喩 ----------
-
-st.markdown('<div class="tl-heading">みんなの比喩</div>', unsafe_allow_html=True)
-
-if not get_supabase():
-    note("みんなの比喩は、いま表示できません（データベースが未設定です）。")
-else:
-    try:
-        timeline = fetch_timeline()
-    except Exception as e:
-        print(f"[timeline] {type(e).__name__}: {e}")
-        timeline = None
-        note("みんなの比喩を読み込めませんでした。しばらくしてから再読み込みしてください。")
-
-    if timeline == []:
-        note("まだ投稿がありません。最初の一行を載せてみてください。")
-    elif timeline:
-        for item in timeline:
-            st.markdown(
-                f'<div class="tl-metaphor">{html.escape(item["metaphor"])}</div>'
-                f'<div class="tl-source">{html.escape(item["user_input"])}</div>',
-                unsafe_allow_html=True,
-            )
-            if item["id"] in st.session_state.my_post_ids:
-                if st.button("削除", key=f"del_{item['id']}"):
+            if metaphor:
+                st.session_state.current_result = {"metaphor": metaphor, "explanation": explanation}
+                if share and get_supabase():
                     try:
-                        delete_post(item["id"])
-                        st.session_state.my_post_ids.discard(item["id"])
-                        st.rerun()
+                        post_id = post_to_timeline(clean_input, metaphor, explanation)
+                        if post_id is not None:
+                            st.session_state.my_post_ids.add(post_id)
                     except Exception as e:
-                        print(f"[delete] {type(e).__name__}: {e}")
-                        note("削除できませんでした。もう一度押してください。", alert=True)
+                        print(f"[insert] {type(e).__name__}: {e}")
+                        st.session_state.share_failed = True
+
+    if st.session_state.current_result:
+        res = st.session_state.current_result
+        explanation_html = (f'<div class="explanation">{html.escape(res["explanation"])}</div>'
+                            if res["explanation"] else "")
+        st.markdown(
+            f'<div class="card"><div class="metaphor">{html.escape(res["metaphor"])}</div>{explanation_html}</div>',
+            unsafe_allow_html=True,
+        )
+        if st.session_state.pop("share_failed", False):
+            note("比喩はできましたが、みんなの比喩には載せられませんでした。")
+
+with right:
+    with st.container(key="timeline"):
+        st.markdown('<div class="tl-heading">みんなの比喩</div>', unsafe_allow_html=True)
+
+        if not get_supabase():
+            note("みんなの比喩は、いま表示できません（データベースが未設定です）。")
+        else:
+            try:
+                timeline = fetch_timeline()
+            except Exception as e:
+                print(f"[timeline] {type(e).__name__}: {e}")
+                timeline = None
+                note("みんなの比喩を読み込めませんでした。しばらくしてから再読み込みしてください。")
+
+            if timeline == []:
+                note("まだ投稿がありません。最初の一行を載せてみてください。")
+            elif timeline:
+                for item in timeline:
+                    st.markdown(
+                        f'<div class="memo"><div class="tl-metaphor">{html.escape(item["metaphor"])}</div>'
+                        f'<div class="tl-source">{html.escape(item["user_input"])}</div></div>',
+                        unsafe_allow_html=True,
+                    )
+                    if item["id"] in st.session_state.my_post_ids:
+                        if st.button("削除", key=f"del_{item['id']}"):
+                            try:
+                                delete_post(item["id"])
+                                st.session_state.my_post_ids.discard(item["id"])
+                                st.rerun()
+                            except Exception as e:
+                                print(f"[delete] {type(e).__name__}: {e}")
+                                note("削除できませんでした。もう一度押してください。", alert=True)
