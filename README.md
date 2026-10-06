@@ -18,7 +18,8 @@
 
 * **Frontend / GUI:** Streamlit (Custom CSSによる文学的・モダンなUIデザイン)
 * **Server / AI Core:** Gemini 2.5 Flash API (Structured JSON Output / Few-Shot Learning)
-* **Cloud Infrastructure:** AWS S3 (boto3) ＆ **Supabase (PostgreSQL / リアルタイムデータストア)**
+* **Database:** Supabase (PostgreSQL)
+* **Ops:** GitHub Actions（Supabase無料プランの自動停止を防ぐ定期アクセス）
 * **Security:** python-dotenv (環境変数の秘匿化・多層入力バリデーション)
 
 ---
@@ -50,7 +51,7 @@ Web公開を見据えたセキュリティガードと、AWS SAAの知識を活�
 
 * **Supabase (PostgreSQL):** テキストデータの永続化と、超高速なリアルタイムタイムライン通信を両立させるため。また、固有IDの管理によってデータごとの柔軟な削除操作を可能にするため。
 * **Gemini 2.5 Flash (JSON Mode):** 詩的な感性と冷徹な構造分析という相反する出力を高い解像度で両立させ、かつシステム側で確実にパース可能な構造化データ（JSON）を高速に取得するため。
-* **AWS S3:** 拡張性が高く堅牢なオブジェクトストレージインフラに、監査ログとして「元の入力」「生成された比喩」「解説」の全生データをboto3経由でセキュアに永続化（アーカイブ）するため。
+* **AWS S3（第1〜2弾で使用、現在は停止中）:** 初期は監査ログとして入力・比喩・解説をboto3でS3に保存していましたが、現在はSupabaseへの保存に一本化しています。
 
 ---
 
@@ -58,4 +59,16 @@ Web公開を見据えたセキュリティガードと、AWS SAAの知識を活�
 
 ### 必要ライブラリのインストール
 ```bash
-pip install streamlit google-genai boto3 python-dotenv supabase
+pip install -r requirements.txt
+
+
+---
+
+### 🔹 第5弾：UIの刷新と運用面の改善（2026年10月）
+* **ミニマルなUIへ刷新:** 装飾を削り、生成された比喩だけを大きく見せる1カラム構成に変更。サイドバーのタイムラインは本文下の「みんなの比喩」へ移動。
+* **自動停止への対策:** Supabase無料プランは7日間アクセスがないと一時停止されるため、GitHub Actionsで3日おきに読み取りを1回送る `supabase-keepalive.yml` を追加。
+* **安全面:** 表示時のHTMLエスケープでタグの埋め込みを防止。削除ボタンは自分がそのセッションで投稿したものだけに表示。
+* **エラー表示:** 何が起きて、次に何をすればいいかが分かる文言に統一。タイムラインは30秒キャッシュしてDBへのアクセスを削減。
+
+### GitHub Actions の設定
+リポジトリの Settings → Secrets and variables → Actions に `SUPABASE_URL` と `SUPABASE_KEY` を登録してください。Actionsタブから手動実行して、成功すれば設定完了です。
