@@ -60,7 +60,19 @@ Web公開を見据えたセキュリティガードと、AWS SAAの知識を活�
 ### 必要ライブラリのインストール
 ```bash
 pip install -r requirements.txt
+```
 
+### 環境変数（`.env`）
+```
+GEMINI_API_KEY=...
+SUPABASE_URL=...
+SUPABASE_KEY=...
+```
+
+### 起動
+```bash
+streamlit run app.py
+```
 
 ---
 
