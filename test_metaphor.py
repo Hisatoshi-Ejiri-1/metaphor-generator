@@ -393,9 +393,9 @@ def generate_metaphor(text, avoid=None):
 # ---------- 共有 ----------
 
 def share_bar(metaphor):
-    """コピーとBlueskyへの投稿。クリップボードはブラウザ側でしか触れないので小さなHTMLで作る"""
+    """コピーとXへの投稿。クリップボードはブラウザ側でしか触れないので小さなHTMLで作る"""
     share_text = f"「{metaphor}」\n#比喩生成システム\n{APP_URL}"
-    bsky = "https://bsky.app/intent/compose?text=" + quote(share_text)
+    x_url = "https://x.com/intent/post?text=" + quote(share_text)
     # LLMの出力を埋め込むので、</script> などで抜け出せないようにする
     text_js = json.dumps(metaphor, ensure_ascii=False).replace("<", "\\u003c").replace(">", "\\u003e")
     st.iframe(f"""
@@ -413,7 +413,7 @@ def share_bar(metaphor):
 </style>
 <div class="bar">
   <button id="copy" type="button">コピー</button>
-  <a href="{html.escape(bsky)}" target="_blank" rel="noopener">Blueskyに投稿</a>
+  <a href="{html.escape(x_url)}" target="_blank" rel="noopener">Xでポスト</a>
 </div>
 <script>
   const text = {text_js};
