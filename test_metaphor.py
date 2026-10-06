@@ -9,7 +9,7 @@ from collections import deque
 
 import streamlit as st
 from google import genai
-from google.genai import types
+from google.genai import types, errors
 from dotenv import load_dotenv
 from supabase import create_client, Client
 
@@ -176,6 +176,11 @@ header[data-testid="stHeader"], [data-testid="stToolbar"], footer, #MainMenu,
 """, unsafe_allow_html=True)
 
 
+def log(message):
+    """Streamlit Cloud のログに確実に出す（print はためこまれて出ないことがある）"""
+    print(message, flush=True)
+
+
 def note(text, alert=False):
     cls = "note alert" if alert else "note"
     st.markdown(f'<div class="{cls}">{html.escape(text)}</div>', unsafe_allow_html=True)
@@ -312,9 +317,31 @@ SYSTEM_INSTRUCTION = """
 """
 
 
+def call_with_retry(fn):
+    """Google側の一時的なエラー（5xx）なら、2秒待って1回だけやり直す"""
+    try:
+        return fn()
+    except errors.ServerError as e:
+        log(f"[generate] retry after {e.code}: {e}")
+        time.sleep(2)
+        return fn()
+
+
+def explain_generate_error(e):
+    """例外から、画面に出す文言を決める"""
+    code = getattr(e, "code", None)
+    if code == 429:
+        return "いまは生成の上限に達しています。しばらく（長いときは翌日まで）待ってから、もう一度押してください。"
+    if isinstance(e, errors.ServerError):
+        return "生成サービスが混み合っています。1〜2分待ってから、もう一度押してください。"
+    if code in (400, 401, 403):
+        return "生成サービスの設定に問題があり、生成できません。管理者に連絡してください。"
+    return "比喩の生成に失敗しました。少し時間をおいて、もう一度押してください。"
+
+
 def generate_metaphor(text):
     client = genai.Client(api_key=GOOGLE_API_KEY)
-    response = client.models.generate_content(
+    response = call_with_retry(lambda: client.models.generate_content(
         model="gemini-2.5-flash",
         contents=text,
         config=types.GenerateContentConfig(
@@ -322,7 +349,7 @@ def generate_metaphor(text):
             temperature=0.85,
             response_mime_type="application/json",
         ),
-    )
+    ))
     data = json.loads(response.text.strip())
     metaphor = str(data.get("metaphor", "")).strip()
     explanation = str(data.get("explanation", "")).strip()
@@ -378,8 +405,8 @@ with left:
                 except json.JSONDecodeError:
                     note("うまく比喩にできませんでした。もう一度「比喩にする」を押してください。", alert=True)
                 except Exception as e:
-                    print(f"[generate] {type(e).__name__}: {e}")
-                    note("比喩の生成に失敗しました。少し時間をおいて、もう一度押してください。", alert=True)
+                    log(f"[generate] {type(e).__name__}: {e}")
+                    note(explain_generate_error(e), alert=True)
 
             if metaphor:
                 st.session_state.current_result = {"metaphor": metaphor, "explanation": explanation}
@@ -389,7 +416,7 @@ with left:
                         if post_id is not None:
                             st.session_state.my_post_ids[post_id] = token
                     except Exception as e:
-                        print(f"[insert] {type(e).__name__}: {e}")
+                        log(f"[insert] {type(e).__name__}: {e}")
                         st.session_state.share_failed = True
 
     if st.session_state.current_result:
@@ -413,7 +440,7 @@ with right:
             try:
                 timeline = fetch_timeline()
             except Exception as e:
-                print(f"[timeline] {type(e).__name__}: {e}")
+                log(f"[timeline] {type(e).__name__}: {e}")
                 timeline = None
                 note("みんなの比喩を読み込めませんでした。しばらくしてから再読み込みしてください。")
 
@@ -435,5 +462,5 @@ with right:
                                 st.session_state.my_post_ids.pop(item["id"], None)
                                 st.rerun()
                             except Exception as e:
-                                print(f"[delete] {type(e).__name__}: {e}")
+                                log(f"[delete] {type(e).__name__}: {e}")
                                 note("削除できませんでした。もう一度押してください。", alert=True)
