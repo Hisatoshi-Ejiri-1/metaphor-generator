@@ -1,6 +1,11 @@
 import os
 import json
 import html
+import time
+import hashlib
+import secrets
+import threading
+from collections import deque
 
 import streamlit as st
 from google import genai
@@ -17,6 +22,11 @@ SUPABASE_KEY = os.getenv("SUPABASE_KEY")
 TABLE = "global_timeline"
 MAX_LEN = 100
 NG_WORDS_FILE = "ng_words.txt"
+
+# 連打・荒らし対策
+COOLDOWN_SEC = 10          # 1人が次に生成できるまでの間隔
+SESSION_LIMIT = 30         # 1人（1セッション）あたりの生成回数の上限
+GLOBAL_PER_MINUTE = 8      # サイト全体で1分あたりに生成できる回数
 
 st.set_page_config(page_title="比喩生成システム", page_icon="☕", layout="wide")
 
@@ -188,29 +198,78 @@ def fetch_timeline():
     return res.data
 
 
+def hash_token(token):
+    return hashlib.sha256(token.encode("utf-8")).hexdigest()
+
+
 def post_to_timeline(user_input, metaphor, explanation):
-    sb = get_supabase()
-    res = sb.table(TABLE).insert({
+    """投稿して (id, 削除用の合言葉) を返す。DBには合言葉のハッシュだけを保存する"""
+    token = secrets.token_urlsafe(24)
+    res = get_supabase().table(TABLE).insert({
         "user_input": user_input,
         "metaphor": metaphor,
         "explanation": explanation,
+        "delete_token_hash": hash_token(token),
     }).execute()
     fetch_timeline.clear()
-    return res.data[0]["id"] if res.data else None
+    post_id = res.data[0]["id"] if res.data else None
+    return post_id, token
 
 
-def delete_post(post_id):
-    get_supabase().table(TABLE).delete().eq("id", post_id).execute()
+def delete_post(post_id, token):
+    """合言葉が一致したときだけDB側の関数が削除する（RLSで直接の削除は禁止）"""
+    res = get_supabase().rpc("delete_own_post", {"p_id": post_id, "p_token": token}).execute()
     fetch_timeline.clear()
+    return bool(res.data)
 
 
 # ---------- 入力チェック ----------
 
+@st.cache_data(ttl=600, show_spinner=False)
 def load_ng_words():
-    if not os.path.exists(NG_WORDS_FILE):
-        return []
-    with open(NG_WORDS_FILE, "r", encoding="utf-8") as f:
-        return [line.strip() for line in f if line.strip()]
+    """本番は Streamlit の Secrets（NG_WORDS）、手元では ng_words.txt から読む"""
+    words = []
+    try:
+        raw = st.secrets.get("NG_WORDS", "")
+    except Exception:  # Secrets が未設定の環境
+        raw = ""
+    if isinstance(raw, str):
+        words += raw.splitlines()
+    else:
+        words += list(raw)
+    if os.path.exists(NG_WORDS_FILE):
+        with open(NG_WORDS_FILE, "r", encoding="utf-8") as f:
+            words += f.read().splitlines()
+    return sorted({w.strip() for w in words if w.strip()})
+
+
+@st.cache_resource
+def global_limiter():
+    """サイト全体（同じサーバー上の全員）で共有する、直近1分間の生成時刻"""
+    return {"times": deque(), "lock": threading.Lock()}
+
+
+def check_rate_limit():
+    """生成してよければ None、だめなら理由を返す。通ったら回数を記録する"""
+    now = time.time()
+    ss = st.session_state
+    wait = COOLDOWN_SEC - (now - ss.get("last_generated", 0))
+    if wait > 0:
+        return f"続けて生成できるのは{COOLDOWN_SEC}秒おきです。あと{int(wait) + 1}秒待ってから押してください。"
+    if ss.get("generate_count", 0) >= SESSION_LIMIT:
+        return f"1回の訪問で生成できるのは{SESSION_LIMIT}回までです。時間をおいてから、また来てください。"
+
+    g = global_limiter()
+    with g["lock"]:
+        while g["times"] and now - g["times"][0] > 60:
+            g["times"].popleft()
+        if len(g["times"]) >= GLOBAL_PER_MINUTE:
+            return "いま混み合っています。1分ほど待ってから、もう一度押してください。"
+        g["times"].append(now)
+
+    ss.last_generated = now
+    ss.generate_count = ss.get("generate_count", 0) + 1
+    return None
 
 
 def validate(text):
@@ -277,7 +336,7 @@ def generate_metaphor(text):
 if "current_result" not in st.session_state:
     st.session_state.current_result = None
 if "my_post_ids" not in st.session_state:
-    st.session_state.my_post_ids = set()
+    st.session_state.my_post_ids = {}  # 投稿ID → 削除用の合言葉
 
 SQUIGGLE = ('<svg class="squiggle" viewBox="0 0 176 10" preserveAspectRatio="none" aria-hidden="true">'
             '<path d="M2 6 C 20 2, 34 9, 52 5 S 88 2, 104 6 S 140 9, 158 4 S 170 5, 174 6" '
@@ -308,6 +367,8 @@ with left:
             note(problem, alert=True)
         elif not GOOGLE_API_KEY:
             note("生成に必要な設定（GEMINI_API_KEY）がありません。管理者に連絡してください。", alert=True)
+        elif (limited := check_rate_limit()):
+            note(limited, alert=True)
         else:
             metaphor = None
             with st.spinner("比喩を考えています…"):
@@ -323,9 +384,9 @@ with left:
                 st.session_state.current_result = {"metaphor": metaphor, "explanation": explanation}
                 if share and get_supabase():
                     try:
-                        post_id = post_to_timeline(clean_input, metaphor, explanation)
+                        post_id, token = post_to_timeline(clean_input, metaphor, explanation)
                         if post_id is not None:
-                            st.session_state.my_post_ids.add(post_id)
+                            st.session_state.my_post_ids[post_id] = token
                     except Exception as e:
                         print(f"[insert] {type(e).__name__}: {e}")
                         st.session_state.share_failed = True
@@ -367,8 +428,10 @@ with right:
                     if item["id"] in st.session_state.my_post_ids:
                         if st.button("削除", key=f"del_{item['id']}"):
                             try:
-                                delete_post(item["id"])
-                                st.session_state.my_post_ids.discard(item["id"])
+                                token = st.session_state.my_post_ids[item["id"]]
+                                if not delete_post(item["id"], token):
+                                    raise RuntimeError("delete_own_post returned false")
+                                st.session_state.my_post_ids.pop(item["id"], None)
                                 st.rerun()
                             except Exception as e:
                                 print(f"[delete] {type(e).__name__}: {e}")

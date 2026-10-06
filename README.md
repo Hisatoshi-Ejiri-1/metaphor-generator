@@ -72,3 +72,9 @@ pip install -r requirements.txt
 
 ### GitHub Actions の設定
 リポジトリの Settings → Secrets and variables → Actions に `SUPABASE_URL` と `SUPABASE_KEY` を登録してください。Actionsタブから手動実行して、成功すれば設定完了です。
+
+### 🔹 第6弾：荒らし・不正操作への対策（2026年10月）
+* **RLS（行単位のアクセス制御）:** Supabase側で「読む・投稿する」だけを許可し、直接の書き換え・削除を禁止（`supabase/policies.sql`）。
+* **自分の投稿だけ削除できる仕組み:** 投稿時にランダムな合言葉を発行し、DBにはそのSHA-256ハッシュだけを保存。削除はDB関数 `delete_own_post` が合言葉を照合したときだけ実行される。
+* **連打対策:** 1人あたり10秒間隔・1訪問30回まで、サイト全体で1分あたり8回までに制限し、Gemini APIの無料枠を守る。
+* **NGワードの本番適用:** NGワードは公開リポジトリに置かず、Streamlitの Secrets（`NG_WORDS`）から読み込む。
