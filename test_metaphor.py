@@ -335,8 +335,9 @@ def generate_metaphor(text):
 
 if "current_result" not in st.session_state:
     st.session_state.current_result = None
-if "my_post_ids" not in st.session_state:
-    st.session_state.my_post_ids = {}  # 投稿ID → 削除用の合言葉
+# 投稿ID → 削除用の合言葉。古いバージョンのページでは set で残っていることがあるので作り直す
+if not isinstance(st.session_state.get("my_post_ids"), dict):
+    st.session_state.my_post_ids = {}
 
 SQUIGGLE = ('<svg class="squiggle" viewBox="0 0 176 10" preserveAspectRatio="none" aria-hidden="true">'
             '<path d="M2 6 C 20 2, 34 9, 52 5 S 88 2, 104 6 S 140 9, 158 4 S 170 5, 174 6" '
