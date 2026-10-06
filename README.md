@@ -4,7 +4,8 @@
 
 https://metaphor-generator.streamlit.app/
 
-![画面](docs/screenshot.png)
+<img src="docs/screenshot.png" alt="トップ画面と、みんなの比喩" width="640">
+<img src="docs/result.png" alt="比喩を作ったところ" width="360">
 
 ## できること
 
