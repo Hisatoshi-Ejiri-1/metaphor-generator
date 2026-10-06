@@ -1,0 +1,24 @@
+# Supabase 無料プランは、7日間ほとんどアクセスがないとプロジェクトが一時停止される。
+# 3日おきに軽い読み取りを1回送って、停止を防ぐ。
+name: Supabase keepalive
+
+on:
+  schedule:
+    - cron: "0 0 */3 * *"   # 3日おき 09:00 JST
+  workflow_dispatch:         # Actions画面から手動実行もできる
+
+jobs:
+  ping:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Read one row from global_timeline
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
+        run: |
+          status=$(curl -s -o /dev/null -w "%{http_code}" \
+            "$SUPABASE_URL/rest/v1/global_timeline?select=id&limit=1" \
+            -H "apikey: $SUPABASE_KEY" \
+            -H "Authorization: Bearer $SUPABASE_KEY")
+          echo "HTTP $status"
+          test "$status" = "200"
