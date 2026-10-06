@@ -8,6 +8,7 @@ import threading
 from collections import deque
 
 import streamlit as st
+from urllib.parse import quote
 from google import genai
 from google.genai import types, errors
 from dotenv import load_dotenv
@@ -20,6 +21,7 @@ SUPABASE_URL = os.getenv("SUPABASE_URL")
 SUPABASE_KEY = os.getenv("SUPABASE_KEY")
 
 TABLE = "global_timeline"
+APP_URL = os.getenv("APP_URL", "https://hisatoshi-ejiri-1-metaphor-generator-test-metaphor-dam6hx.streamlit.app/")
 MAX_LEN = 100
 NG_WORDS_FILE = "ng_words.txt"
 
@@ -169,6 +171,32 @@ header[data-testid="stHeader"], [data-testid="stToolbar"], footer, #MainMenu,
 [class*="st-key-del_"] button:hover { color: var(--alert); background: transparent; }
 .stApp .stMarkdown { margin-bottom: 0 !important; }
 
+/* 結果の下の操作 */
+.st-key-again button {
+    background: #FFFFFF;
+    color: var(--sky);
+    border: 1.5px solid var(--sky);
+    border-radius: 999px;
+    padding: 0.4rem 1.3rem;
+    font-weight: 700;
+}
+.st-key-again button:hover { background: var(--mist); color: var(--sky-deep); border-color: var(--sky-deep); }
+
+/* みんなの比喩：解説を開く */
+.memo details { margin-top: 0.35rem; }
+.memo summary {
+    font-size: 0.78rem;
+    color: var(--sky);
+    cursor: pointer;
+    list-style: none;
+    width: fit-content;
+}
+.memo summary::-webkit-details-marker { display: none; }
+.memo summary::before { content: "＋ "; }
+.memo details[open] summary::before { content: "－ "; }
+.memo summary:focus-visible { outline: 2px solid var(--sky); outline-offset: 2px; border-radius: 4px; }
+.stApp .tl-explanation { font-size: 0.82rem; line-height: 1.85; color: var(--ink); margin-top: 0.3rem; }
+
 @media (min-width: 900px) {
     .st-key-timeline { padding-left: 2rem; border-left: 1.5px dashed var(--line); }
 }
@@ -199,7 +227,7 @@ def get_supabase():
 def fetch_timeline():
     """失敗したら例外をそのまま上げる（キャッシュされない）"""
     sb = get_supabase()
-    res = sb.table(TABLE).select("id, user_input, metaphor").order("created_at", desc=True).limit(20).execute()
+    res = sb.table(TABLE).select("id, user_input, metaphor, explanation").order("created_at", desc=True).limit(20).execute()
     return res.data
 
 
@@ -339,11 +367,15 @@ def explain_generate_error(e):
     return "比喩の生成に失敗しました。少し時間をおいて、もう一度押してください。"
 
 
-def generate_metaphor(text):
+def generate_metaphor(text, avoid=None):
+    """avoid に前回の比喩を渡すと、それとは違う発想で作らせる"""
+    contents = text
+    if avoid:
+        contents += f"\n\n（前回は「{avoid}」という比喩でした。これとは違うものに例えてください）"
     client = genai.Client(api_key=GOOGLE_API_KEY)
     response = call_with_retry(lambda: client.models.generate_content(
         model="gemini-2.5-flash",
-        contents=text,
+        contents=contents,
         config=types.GenerateContentConfig(
             system_instruction=SYSTEM_INSTRUCTION,
             temperature=0.85,
@@ -356,6 +388,49 @@ def generate_metaphor(text):
     if not metaphor:
         raise ValueError("比喩が空で返ってきました")
     return metaphor, explanation
+
+
+# ---------- 共有 ----------
+
+def share_bar(metaphor):
+    """コピーとXへの投稿。クリップボードはブラウザ側でしか触れないので小さなHTMLで作る"""
+    share_text = f"「{metaphor}」\n#比喩生成システム\n{APP_URL}"
+    x_url = "https://x.com/intent/post?text=" + quote(share_text)
+    # LLMの出力を埋め込むので、</script> などで抜け出せないようにする
+    text_js = json.dumps(metaphor, ensure_ascii=False).replace("<", "\\u003c").replace(">", "\\u003e")
+    st.iframe(f"""
+<link href="https://fonts.googleapis.com/css2?family=Zen+Maru+Gothic:wght@700&display=swap" rel="stylesheet">
+<style>
+  body {{ margin: 0; font-family: 'Zen Maru Gothic', sans-serif; }}
+  .bar {{ display: flex; gap: 0.5rem; flex-wrap: wrap; }}
+  .bar button, .bar a {{
+    font: inherit; font-size: 14px; font-weight: 700; text-decoration: none;
+    padding: 6px 18px; border-radius: 999px; cursor: pointer;
+    border: 1.5px solid #A9CCF7; background: #EEF5FF; color: #1B2A3D;
+  }}
+  .bar button:hover, .bar a:hover {{ border-color: #1185FE; }}
+  .bar button:focus-visible, .bar a:focus-visible {{ outline: 2px solid #1185FE; outline-offset: 2px; }}
+</style>
+<div class="bar">
+  <button id="copy" type="button">コピー</button>
+  <a href="{html.escape(x_url)}" target="_blank" rel="noopener">Xでポスト</a>
+</div>
+<script>
+  const text = {text_js};
+  const btn = document.getElementById("copy");
+  btn.addEventListener("click", async () => {{
+    try {{
+      await navigator.clipboard.writeText(text);
+    }} catch (e) {{
+      const t = document.createElement("textarea");
+      t.value = text; document.body.appendChild(t); t.select();
+      document.execCommand("copy"); t.remove();
+    }}
+    btn.textContent = "コピーしました";
+    setTimeout(() => (btn.textContent = "コピー"), 1800);
+  }});
+</script>
+""", width=260, height=44)
 
 
 # ---------- 画面 ----------
@@ -376,6 +451,40 @@ st.markdown(
     unsafe_allow_html=True,
 )
 
+def run_generation(text, share, avoid=None):
+    """比喩を作って、結果を session_state に入れる。共有がオンならタイムラインにも載せる"""
+    if not GOOGLE_API_KEY:
+        note("生成に必要な設定（GEMINI_API_KEY）がありません。管理者に連絡してください。", alert=True)
+        return
+    limited = check_rate_limit()
+    if limited:
+        note(limited, alert=True)
+        return
+
+    metaphor = None
+    with st.spinner("比喩を考えています…"):
+        try:
+            metaphor, explanation = generate_metaphor(text, avoid=avoid)
+        except json.JSONDecodeError:
+            note("うまく比喩にできませんでした。もう一度押してください。", alert=True)
+        except Exception as e:
+            log(f"[generate] {type(e).__name__}: {e}")
+            note(explain_generate_error(e), alert=True)
+    if not metaphor:
+        return
+
+    st.session_state.current_result = {"metaphor": metaphor, "explanation": explanation}
+    st.session_state.last_input = text
+    if share and get_supabase():
+        try:
+            post_id, token = post_to_timeline(text, metaphor, explanation)
+            if post_id is not None:
+                st.session_state.my_post_ids[post_id] = token
+        except Exception as e:
+            log(f"[insert] {type(e).__name__}: {e}")
+            st.session_state.share_failed = True
+
+
 left, right = st.columns([3, 2], gap="large")
 
 with left:
@@ -393,31 +502,11 @@ with left:
         problem = validate(clean_input)
         if problem:
             note(problem, alert=True)
-        elif not GOOGLE_API_KEY:
-            note("生成に必要な設定（GEMINI_API_KEY）がありません。管理者に連絡してください。", alert=True)
-        elif (limited := check_rate_limit()):
-            note(limited, alert=True)
         else:
-            metaphor = None
-            with st.spinner("比喩を考えています…"):
-                try:
-                    metaphor, explanation = generate_metaphor(clean_input)
-                except json.JSONDecodeError:
-                    note("うまく比喩にできませんでした。もう一度「比喩にする」を押してください。", alert=True)
-                except Exception as e:
-                    log(f"[generate] {type(e).__name__}: {e}")
-                    note(explain_generate_error(e), alert=True)
-
-            if metaphor:
-                st.session_state.current_result = {"metaphor": metaphor, "explanation": explanation}
-                if share and get_supabase():
-                    try:
-                        post_id, token = post_to_timeline(clean_input, metaphor, explanation)
-                        if post_id is not None:
-                            st.session_state.my_post_ids[post_id] = token
-                    except Exception as e:
-                        log(f"[insert] {type(e).__name__}: {e}")
-                        st.session_state.share_failed = True
+            run_generation(clean_input, share)
+    elif st.session_state.pop("regen", False) and st.session_state.get("last_input"):
+        prev = st.session_state.current_result["metaphor"] if st.session_state.current_result else None
+        run_generation(st.session_state.last_input, share, avoid=prev)
 
     if st.session_state.current_result:
         res = st.session_state.current_result
@@ -427,6 +516,9 @@ with left:
             f'<div class="card"><div class="metaphor">{html.escape(res["metaphor"])}</div>{explanation_html}</div>',
             unsafe_allow_html=True,
         )
+        with st.container(horizontal=True, gap="small", vertical_alignment="center"):
+            st.button("別の比喩にする", key="again", on_click=lambda: st.session_state.update(regen=True))
+            share_bar(res["metaphor"])
         if st.session_state.pop("share_failed", False):
             note("比喩はできましたが、みんなの比喩には載せられませんでした。")
 
@@ -448,9 +540,13 @@ with right:
                 note("まだ投稿がありません。最初の一行を載せてみてください。")
             elif timeline:
                 for item in timeline:
+                    explanation = (item.get("explanation") or "").strip()
+                    details = (f'<details><summary>解説を読む</summary>'
+                               f'<div class="tl-explanation">{html.escape(explanation)}</div></details>'
+                               if explanation else "")
                     st.markdown(
                         f'<div class="memo"><div class="tl-metaphor">{html.escape(item["metaphor"])}</div>'
-                        f'<div class="tl-source">{html.escape(item["user_input"])}</div></div>',
+                        f'<div class="tl-source">{html.escape(item["user_input"])}</div>{details}</div>',
                         unsafe_allow_html=True,
                     )
                     if item["id"] in st.session_state.my_post_ids:
