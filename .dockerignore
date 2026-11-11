@@ -1,0 +1,11 @@
+.git
+.github
+.devcontainer
+.env
+infra
+docs
+tests
+__pycache__
+*.pyc
+ng_words.txt
+README.md

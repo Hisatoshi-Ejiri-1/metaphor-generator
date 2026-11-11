@@ -1,4 +1,2 @@
 streamlit==1.65.0
-google-genai==2.28.0
-supabase==2.32.0
-python-dotenv==1.2.3
+boto3==1.44.0

@@ -1,8 +1,9 @@
 # 比喩生成システム
 
 うまく言葉にできない違和感や、忘れたくない小さなできごとを、一行の比喩にするWebアプリです。
+AWS（ECS on Fargate）で動かし、インフラはすべて Terraform で管理しています。
 
-https://metaphor-generator.streamlit.app/
+> コストを抑えるため、普段は環境を停止しています。Terraform で数分あれば同じ環境を作り直せます。
 
 <img src="docs/screenshot.png" alt="トップ画面と、みんなの比喩" width="640">
 <img src="docs/result.png" alt="比喩を作ったところ" width="360">
@@ -18,56 +19,126 @@ https://metaphor-generator.streamlit.app/
 
 ```mermaid
 flowchart LR
-    U[ブラウザ] --> S[Streamlit Community Cloud<br/>app.py]
-    S -->|入力| G[Gemini API]
-    G -->|比喩と解説 JSON| S
-    S -->|読む・投稿・削除| D[(Supabase<br/>PostgreSQL)]
-    A[GitHub Actions<br/>1日3回] -->|停止防止の読み取り| D
+    U[ブラウザ] -->|HTTP| ALB
+    subgraph VPC["VPC（2AZ・publicサブネットのみ）"]
+        ALB[ALB] --> ECS[ECS Fargate<br/>Streamlit]
+    end
+    ECS -->|IAMロール| B[Bedrock<br/>Claude Haiku 4.5<br/>日本国内の推論]
+    ECS -->|IAMロール| D[(DynamoDB)]
+    ECS --> L[CloudWatch Logs]
+    R[ECR] -.イメージ.-> ECS
 ```
 
 | 役割 | 使っているもの |
 |---|---|
 | 画面 | Streamlit（カスタムCSS） |
-| 比喩の生成 | Gemini API（JSONで出力、Few-Shotの例つき） |
-| データベース | Supabase（PostgreSQL、RLS） |
-| 運用 | GitHub Actions、Streamlit Community Cloud |
+| 比喩の生成 | Amazon Bedrock（Claude Haiku 4.5、jp 推論プロファイル） |
+| データベース | DynamoDB（オンデマンド） |
+| 実行環境 | ECS on Fargate、ALB、VPC、ECR |
+| インフラ管理 | Terraform（常時残す層と、使うときだけ立てる層の2つ） |
+
+Terraform は2つに分けています。
+
+| 層 | 中身 | 方針 |
+|---|---|---|
+| `infra/base` | DynamoDB、ECR、CloudWatch Logs | 常時残す。ほぼ無料。DynamoDB は削除保護＋`prevent_destroy` |
+| `infra/app` | VPC、ALB、ECS、IAMロール | 使うときだけ `apply`、終わったら `destroy` |
 
 ## 設計で気をつけたこと
 
-**誰でも使える公開サービスとしての安全性**
-- Supabase の RLS（行単位のアクセス制御）で、匿名ユーザーには「読む」と「投稿する」だけを許可し、直接の書き換え・削除を禁止しています
-- 自分の投稿を消せるように、投稿時にランダムな合言葉を発行し、DBにはそのハッシュだけを保存しています。削除は、合言葉を照合するDB関数を通したときだけ実行されます
-- 入力や生成結果は、画面に出す前にすべてHTMLエスケープしています
+**なぜ ECS on Fargate か**
+- Streamlit は常駐するプロセスで、ブラウザと WebSocket でつながり続けます。リクエストごとに起動する Lambda には向かないため、コンテナを常駐させる ECS を選びました
+- EC2 と違い OS の管理が要らない Fargate にしました
 
-**無料枠を守る**
+**秘密情報を持たない**
+- 以前は Gemini の APIキーと Supabase のキーを管理していましたが、生成を Bedrock、保存を DynamoDB に移し、どちらも ECS タスクの IAM ロールで認証するようにしました。アプリが持つ APIキーやパスワードはありません
+- IAM は「使う操作」と「使うリソース」の両方を絞っています。DynamoDB は Query・PutItem・DeleteItem をこのテーブルだけに、Bedrock は jp 推論プロファイル経由の呼び出しだけに限定しています（推論を日本国内に限定）
+- 実行ロール（イメージの取得・ログ）とタスクロール（アプリが使う権限）を分けています
+
+**コストを抑える**
+- 時間課金のもの（ALB・Fargate）は `infra/app` にまとめ、使うときだけ立てます。データは `infra/base` にあるので、`destroy` しても消えません
+- NAT Gateway は常時課金で高いため置いていません。本来はタスクを private サブネットに置きますが、ここでは public サブネットに置き、セキュリティグループで「ALB からの 8501 番だけ」を受け付けるようにしています。出ていく通信も HTTPS だけです
+- Fargate は最小サイズ（0.25 vCPU / 0.5 GB）、Container Insights は無効です
+
+**公開サービスとしての安全性**
+- 自分の投稿を消せるように、投稿時にランダムな合言葉を発行し、DB にはそのハッシュだけを保存しています。削除は DynamoDB の条件付き削除で行い、照合と削除を1回の操作で済ませています
+- 入力や生成結果は、画面に出す前にすべて HTML エスケープしています
 - 生成は1人10秒おき・1回の訪問で30回まで、サイト全体で1分8回までに制限しています
-- Supabase の無料プランはアクセスが少ないと一時停止するため、GitHub Actions で1日3回読み取りを送っています（当初の3日おきでは足りず、実際に停止したため見直しました）
 
 **止まりにくくする**
-- Gemini が混雑（5xx）しているときは、1回だけ自動で再試行します
-- モデルが提供終了（404）になったときは、予備のモデルに自動で切り替えます。モデル名はコードを書き換えずに設定で変えられます
+- Bedrock の一時的なエラーは boto3 が自動で再試行します（最大3回）。外部通信には短めのタイムアウトを設定しています
 - エラーは原因ごと（上限・混雑・設定の問題）に、次に何をすればいいかが分かる文言で表示します
-- ライブラリのバージョンを固定し、更新で突然動かなくなるのを防いでいます
+- ALB は Streamlit 組み込みの `/_stcore/health` でヘルスチェックし、新しいイメージが起動しなければ ECS が自動で前のバージョンに戻します（デプロイのサーキットブレーカー）
+- ライブラリのバージョンを固定し、ECR のタグは上書き禁止にしています
 
-## ローカルで動かす
+## 動かし方
+
+前提：AWS CLI、Terraform、Docker。Bedrock で Claude Haiku 4.5 のモデルアクセスを有効にしておきます。
+
+**1. 常時残す層を作る（最初の1回だけ）**
+
+```bash
+terraform -chdir=infra/base init
+terraform -chdir=infra/base apply
+```
+
+**2. イメージを作って ECR に push する**
+
+```bash
+REPO=$(terraform -chdir=infra/base output -raw ecr_repository_url)
+TAG=$(git rev-parse --short HEAD)
+aws ecr get-login-password --region ap-northeast-1 | docker login --username AWS --password-stdin "${REPO%%/*}"
+docker build --platform linux/amd64 --provenance=false -t "$REPO:$TAG" .
+docker push "$REPO:$TAG"
+```
+
+**3. アプリを立てる**
+
+```bash
+terraform -chdir=infra/app init
+terraform -chdir=infra/app apply -var "image_tag=$TAG"
+# 確認中は自分のIPだけに絞ると安心： -var "allowed_cidr=$(curl -s https://checkip.amazonaws.com)/32"
+```
+
+出力された `app_url` をブラウザで開きます（起動まで1〜2分かかります）。
+
+**4. 使い終わったら消す**
+
+```bash
+terraform -chdir=infra/app destroy -var "image_tag=$TAG"
+```
+
+### ローカルで動かす
+
+AWS の認証情報（`aws configure` など）がある状態で、次を実行します。
 
 ```bash
 pip install -r requirements.txt
+export TABLE_NAME=metaphor-generator-timeline
 streamlit run app.py
 ```
 
-`.env`（または `.streamlit/secrets.toml`）に次を設定します。
-
-| 名前 | 内容 | 必須 |
+| 環境変数 | 内容 | 既定 |
 |---|---|---|
-| `GEMINI_API_KEY` | Gemini の APIキー | ○ |
-| `SUPABASE_URL` | Supabase のプロジェクトURL | ○ |
-| `SUPABASE_KEY` | Supabase の anon キー | ○ |
-| `GEMINI_MODEL` | 使うモデル（既定：`gemini-2.5-flash`） | |
-| `GEMINI_FALLBACK_MODELS` | 予備のモデル（カンマ区切り） | |
-| `NG_WORDS` | 弾く言葉（1行に1語） | |
+| `TABLE_NAME` | DynamoDB のテーブル名 | `metaphor-generator-timeline` |
+| `BEDROCK_MODEL_ID` | 使うモデル（推論プロファイル） | `jp.anthropic.claude-haiku-4-5-20251001-v1:0` |
+| `AWS_REGION` | リージョン | `ap-northeast-1` |
+| `APP_URL` | Xの共有文に入れるURL | なし |
+| `NG_WORDS` | 弾く言葉（1行に1語） | なし |
 
-データベースは、Supabase の SQL Editor で [`supabase/schema.sql`](supabase/schema.sql)（テーブル）と [`supabase/policies.sql`](supabase/policies.sql)（アクセス制御）を順に実行して作ります。停止防止の GitHub Actions を使う場合は、リポジトリの Secrets に `SUPABASE_URL` と `SUPABASE_KEY` を登録してください。
+### テスト
+
+DynamoDB は moto、Bedrock は boto3 のスタブで置き換えて動かします（AWS には接続しません）。
+
+```bash
+pip install -r requirements.txt pytest "moto[dynamodb]"
+pytest -q
+```
+
+## 変更履歴
+
+- v1：Streamlit Community Cloud ＋ Gemini API ＋ Supabase
+- v2：AWS に移行（ECS on Fargate・ALB・VPC・Bedrock・DynamoDB・Terraform）。APIキーをなくし、IAM ロールだけで動く構成に
 
 ## ライセンス
 

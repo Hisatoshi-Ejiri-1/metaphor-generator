@@ -1,53 +1,41 @@
 import os
+import re
 import json
 import html
 import time
+import uuid
 import hashlib
 import secrets
 import threading
 from collections import deque
+from datetime import datetime, timezone
 
+import boto3
 import streamlit as st
+from boto3.dynamodb.conditions import Attr, Key
+from botocore.config import Config
+from botocore.exceptions import BotoCoreError, ClientError
 from urllib.parse import quote
-from google import genai
-from google.genai import types, errors
-from dotenv import load_dotenv
-from supabase import create_client, Client
 
-load_dotenv()
+# 設定はすべて環境変数から読む（ECSではタスク定義、手元では export で渡す）。
+# APIキーやDBのパスワードは存在しない。AWSへの認証はECSタスクのIAMロールが行う。
+AWS_REGION = os.getenv("AWS_REGION", "ap-northeast-1")
+# 日本国内の推論プロファイル（推論を国内リージョンに限定する）
+BEDROCK_MODEL_ID = os.getenv("BEDROCK_MODEL_ID", "jp.anthropic.claude-haiku-4-5-20251001-v1:0")
+TABLE_NAME = os.getenv("TABLE_NAME", "metaphor-generator-timeline")
+APP_URL = os.getenv("APP_URL", "")
 
+# 外部通信はタイムアウトを短めにし、一時的なエラーは boto3 に3回まで再試行させる
+BOTO_CONFIG = Config(
+    region_name=AWS_REGION,
+    connect_timeout=5,
+    read_timeout=30,
+    retries={"max_attempts": 3, "mode": "standard"},
+)
 
+# DynamoDB：全投稿を同じパーティションに入れ、ソートキー（投稿日時＋ランダム）で新しい順に並べる
+TIMELINE_PK = "TIMELINE"
 
-def setting(name):
-    """環境変数（.env）→ Streamlit の Secrets の順に探す。Secrets は見出しの下に入っていても見つける"""
-    value = os.getenv(name)
-    if value:
-        return value
-    try:
-        if name in st.secrets:
-            return str(st.secrets[name])
-        for section in st.secrets.values():
-            if hasattr(section, "get") and section.get(name):
-                return str(section.get(name))
-    except Exception:  # Secrets が未設定の環境
-        pass
-    return None
-
-
-GOOGLE_API_KEY = setting("GEMINI_API_KEY")
-SUPABASE_URL = setting("SUPABASE_URL")
-SUPABASE_KEY = setting("SUPABASE_KEY")
-
-# 使うモデル。Secrets の GEMINI_MODEL で変えられる（コードを書き換えずに切り替えるため）
-GEMINI_MODEL = setting("GEMINI_MODEL") or "gemini-2.5-flash"
-# メインのモデルが提供終了（404）だったときに、順に試す予備のモデル（カンマ区切り）
-GEMINI_FALLBACK_MODELS = [
-    m.strip() for m in (setting("GEMINI_FALLBACK_MODELS") or "gemini-3.8-flash,gemini-3.5-flash-lite").split(",")
-    if m.strip()
-]
-
-TABLE = "global_timeline"
-APP_URL = os.getenv("APP_URL", "https://metaphor-generator.streamlit.app/")
 MAX_LEN = 100
 NG_WORDS_FILE = "ng_words.txt"
 
@@ -231,7 +219,7 @@ header[data-testid="stHeader"], [data-testid="stToolbar"], footer, #MainMenu,
 
 
 def log(message):
-    """Streamlit Cloud のログに確実に出す（print はためこまれて出ないことがある）"""
+    """CloudWatch Logs に確実に出す（print はためこまれて出ないことがある）"""
     print(message, flush=True)
 
 
@@ -240,67 +228,90 @@ def note(text, alert=False):
     st.markdown(f'<div class="{cls}">{html.escape(text)}</div>', unsafe_allow_html=True)
 
 
-# ---------- Supabase ----------
+# ---------- AWS クライアント ----------
 
 @st.cache_resource
-def _supabase_client(url, key):
-    return create_client(url, key)
+def bedrock():
+    return boto3.client("bedrock-runtime", config=BOTO_CONFIG)
 
 
-def get_supabase():
-    """「未設定」の結果は覚えない。Secrets を後から入れても、次の表示から接続できる"""
-    if not (SUPABASE_URL and SUPABASE_KEY):
-        return None
-    return _supabase_client(SUPABASE_URL, SUPABASE_KEY)
+@st.cache_resource
+def timeline_table():
+    return boto3.resource("dynamodb", config=BOTO_CONFIG).Table(TABLE_NAME)
 
+
+# ---------- みんなの比喩（DynamoDB） ----------
 
 @st.cache_data(ttl=30, show_spinner=False)
 def fetch_timeline():
-    """失敗したら例外をそのまま上げる（キャッシュされない）"""
-    sb = get_supabase()
-    res = sb.table(TABLE).select("id, user_input, metaphor, explanation").order("created_at", desc=True).limit(20).execute()
-    return res.data
+    """新しい順に20件。失敗したら例外をそのまま上げる（キャッシュされない）"""
+    res = timeline_table().query(
+        KeyConditionExpression=Key("pk").eq(TIMELINE_PK),
+        ScanIndexForward=False,
+        Limit=20,
+        # 削除用のハッシュは画面に不要なので読み出さない
+        ProjectionExpression="sk, user_input, metaphor, explanation",
+    )
+    return [
+        {"id": i["sk"], "user_input": i["user_input"], "metaphor": i["metaphor"],
+         "explanation": i.get("explanation", "")}
+        for i in res.get("Items", [])
+    ]
 
 
 def hash_token(token):
     return hashlib.sha256(token.encode("utf-8")).hexdigest()
 
 
+def new_post_id(now=None):
+    """ソートキー。日時の文字列順＝投稿順になるようにし、同時刻の衝突はランダム部分で避ける"""
+    now = now or datetime.now(timezone.utc)
+    return f"{now.strftime('%Y-%m-%dT%H:%M:%S.%fZ')}#{uuid.uuid4().hex[:8]}"
+
+
 def post_to_timeline(user_input, metaphor, explanation):
     """投稿して (id, 削除用の合言葉) を返す。DBには合言葉のハッシュだけを保存する"""
+    # Supabase ではRLSで掛けていた条件。DBへはこのアプリ（IAMロール）しか書けないので、ここで守る
+    if not (5 <= len(user_input) <= MAX_LEN and 1 <= len(metaphor) <= 200 and len(explanation) <= 600):
+        raise ValueError("投稿の長さが条件を満たしていません")
     token = secrets.token_urlsafe(24)
-    res = get_supabase().table(TABLE).insert({
-        "user_input": user_input,
-        "metaphor": metaphor,
-        "explanation": explanation,
-        "delete_token_hash": hash_token(token),
-    }).execute()
+    post_id = new_post_id()
+    timeline_table().put_item(
+        Item={
+            "pk": TIMELINE_PK,
+            "sk": post_id,
+            "user_input": user_input,
+            "metaphor": metaphor,
+            "explanation": explanation,
+            "delete_token_hash": hash_token(token),
+        },
+        ConditionExpression="attribute_not_exists(sk)",  # 万一IDが重なっても上書きしない
+    )
     fetch_timeline.clear()
-    post_id = res.data[0]["id"] if res.data else None
     return post_id, token
 
 
 def delete_post(post_id, token):
-    """合言葉が一致したときだけDB側の関数が削除する（RLSで直接の削除は禁止）"""
-    res = get_supabase().rpc("delete_own_post", {"p_id": post_id, "p_token": token}).execute()
+    """合言葉のハッシュが一致したときだけ消す（条件付き削除。照合と削除を1回の操作で行う）"""
+    try:
+        timeline_table().delete_item(
+            Key={"pk": TIMELINE_PK, "sk": post_id},
+            ConditionExpression=Attr("delete_token_hash").eq(hash_token(token)),
+        )
+    except ClientError as e:
+        if e.response["Error"]["Code"] == "ConditionalCheckFailedException":
+            return False
+        raise
     fetch_timeline.clear()
-    return bool(res.data)
+    return True
 
 
 # ---------- 入力チェック ----------
 
 @st.cache_data(ttl=600, show_spinner=False)
 def load_ng_words():
-    """本番は Streamlit の Secrets（NG_WORDS）、手元では ng_words.txt から読む"""
-    words = []
-    try:
-        raw = st.secrets.get("NG_WORDS", "")
-    except Exception:  # Secrets が未設定の環境
-        raw = ""
-    if isinstance(raw, str):
-        words += raw.splitlines()
-    else:
-        words += list(raw)
+    """環境変数 NG_WORDS（1行に1語）と ng_words.txt の両方から読む"""
+    words = os.getenv("NG_WORDS", "").splitlines()
     if os.path.exists(NG_WORDS_FILE):
         with open(NG_WORDS_FILE, "r", encoding="utf-8") as f:
             words += f.read().splitlines()
@@ -309,7 +320,8 @@ def load_ng_words():
 
 @st.cache_resource
 def global_limiter():
-    """サイト全体（同じサーバー上の全員）で共有する、直近1分間の生成時刻"""
+    """サイト全体（同じサーバー上の全員）で共有する、直近1分間の生成時刻。
+    メモリ上に持つので、ECSのタスクを2台以上にすると台数分だけ上限が緩む点に注意"""
     return {"times": deque(), "lock": threading.Lock()}
 
 
@@ -376,28 +388,33 @@ SYSTEM_INSTRUCTION = """
 """
 
 
-def call_with_retry(fn):
-    """Google側の一時的なエラー（5xx）なら、2秒待って1回だけやり直す"""
-    try:
-        return fn()
-    except errors.ServerError as e:
-        log(f"[generate] retry after {e.code}: {e}")
-        time.sleep(2)
-        return fn()
+# Bedrock のエラーコード → 画面の文言
+BUSY_CODES = {"ServiceUnavailableException", "InternalServerException",
+              "ModelNotReadyException", "ModelTimeoutException"}
+LIMIT_CODES = {"ThrottlingException", "ServiceQuotaExceededException"}
+CONFIG_CODES = {"AccessDeniedException", "ValidationException", "ResourceNotFoundException",
+                "UnrecognizedClientException"}
 
 
 def explain_generate_error(e):
     """例外から、画面に出す文言を決める"""
-    code = getattr(e, "code", None)
-    if code == 404:
-        return "生成に使うモデルが使えなくなっています。管理者に連絡してください。"
-    if code == 429:
-        return "いまは生成の上限に達しています。しばらく（長いときは翌日まで）待ってから、もう一度押してください。"
-    if isinstance(e, errors.ServerError):
-        return "生成サービスが混み合っています。1〜2分待ってから、もう一度押してください。"
-    if code in (400, 401, 403):
-        return "生成サービスの設定に問題があり、生成できません。管理者に連絡してください。"
+    if isinstance(e, ClientError):
+        code = e.response.get("Error", {}).get("Code", "")
+        if code in LIMIT_CODES:
+            return "いまは生成の上限に達しています。しばらく待ってから、もう一度押してください。"
+        if code in BUSY_CODES:
+            return "生成サービスが混み合っています。1〜2分待ってから、もう一度押してください。"
+        if code in CONFIG_CODES:
+            return "生成サービスの設定に問題があり、生成できません。管理者に連絡してください。"
+    if isinstance(e, BotoCoreError):  # 通信エラー・認証情報が見つからない など
+        return "生成サービスに接続できませんでした。少し時間をおいて、もう一度押してください。"
     return "比喩の生成に失敗しました。少し時間をおいて、もう一度押してください。"
+
+
+def parse_json_reply(text):
+    """モデルの返答からJSON部分だけを取り出す（```json で囲まれていても読めるように）"""
+    match = re.search(r"\{.*\}", text, re.DOTALL)
+    return json.loads(match.group(0) if match else text)
 
 
 def generate_metaphor(text, avoid=None):
@@ -405,27 +422,14 @@ def generate_metaphor(text, avoid=None):
     contents = text
     if avoid:
         contents += f"\n\n（前回は「{avoid}」という比喩でした。これとは違うものに例えてください）"
-    client = genai.Client(api_key=GOOGLE_API_KEY)
-    config = types.GenerateContentConfig(
-        system_instruction=SYSTEM_INSTRUCTION,
-        temperature=0.85,
-        response_mime_type="application/json",
+    response = bedrock().converse(
+        modelId=BEDROCK_MODEL_ID,
+        system=[{"text": SYSTEM_INSTRUCTION}],
+        messages=[{"role": "user", "content": [{"text": contents}]}],
+        inferenceConfig={"temperature": 0.85, "maxTokens": 500},
     )
-    response = None
-    for i, model in enumerate([GEMINI_MODEL] + GEMINI_FALLBACK_MODELS):
-        try:
-            response = call_with_retry(lambda: client.models.generate_content(
-                model=model, contents=contents, config=config,
-            ))
-            if i > 0:
-                log(f"[generate] {GEMINI_MODEL} が使えないため {model} で生成しました。GEMINI_MODEL の更新を検討してください")
-            break
-        except errors.ClientError as e:
-            # 404 = モデルが見つからない（提供終了など）。それ以外のエラーはそのまま上げる
-            if e.code != 404 or i == len(GEMINI_FALLBACK_MODELS):
-                raise
-            log(f"[generate] {model} が見つかりません（404）。予備のモデルを試します")
-    data = json.loads(response.text.strip())
+    reply = "".join(part.get("text", "") for part in response["output"]["message"]["content"])
+    data = parse_json_reply(reply)
     metaphor = str(data.get("metaphor", "")).strip()
     explanation = str(data.get("explanation", "")).strip()
     if not metaphor:
@@ -437,7 +441,7 @@ def generate_metaphor(text, avoid=None):
 
 def share_bar(metaphor):
     """コピーとXへの投稿。クリップボードはブラウザ側でしか触れないので小さなHTMLで作る"""
-    share_text = f"「{metaphor}」\n#比喩生成システム\n{APP_URL}"
+    share_text = f"「{metaphor}」\n#比喩生成システム" + (f"\n{APP_URL}" if APP_URL else "")
     x_url = "https://x.com/intent/post?text=" + quote(share_text)
     # LLMの出力を埋め込むので、</script> などで抜け出せないようにする
     text_js = json.dumps(metaphor, ensure_ascii=False).replace("<", "\\u003c").replace(">", "\\u003e")
@@ -496,9 +500,6 @@ st.markdown(
 
 def run_generation(text, share, avoid=None):
     """比喩を作って、結果を session_state に入れる。共有がオンならタイムラインにも載せる"""
-    if not GOOGLE_API_KEY:
-        note("生成に必要な設定（GEMINI_API_KEY）がありません。管理者に連絡してください。", alert=True)
-        return
     limited = check_rate_limit()
     if limited:
         note(limited, alert=True)
@@ -518,7 +519,7 @@ def run_generation(text, share, avoid=None):
 
     st.session_state.current_result = {"metaphor": metaphor, "explanation": explanation}
     st.session_state.last_input = text
-    if share and get_supabase():
+    if share:
         try:
             post_id, token = post_to_timeline(text, metaphor, explanation)
             if post_id is not None:
@@ -569,37 +570,36 @@ with right:
     with st.container(key="timeline"):
         st.markdown('<div class="tl-heading">みんなの比喩</div>', unsafe_allow_html=True)
 
-        if not get_supabase():
-            note("みんなの比喩は、いま表示できません（データベースが未設定です）。")
-        else:
-            try:
-                timeline = fetch_timeline()
-            except Exception as e:
-                log(f"[timeline] {type(e).__name__}: {e}")
-                timeline = None
-                note("みんなの比喩を読み込めませんでした。しばらくしてから再読み込みしてください。")
+        try:
+            timeline = fetch_timeline()
+        except Exception as e:
+            log(f"[timeline] {type(e).__name__}: {e}")
+            timeline = None
+            note("みんなの比喩を読み込めませんでした。しばらくしてから再読み込みしてください。")
 
-            if timeline == []:
-                note("まだ投稿がありません。最初の一行を載せてみてください。")
-            elif timeline:
-                for item in timeline:
-                    explanation = (item.get("explanation") or "").strip()
-                    details = (f'<details><summary>解説を読む</summary>'
-                               f'<div class="tl-explanation">{html.escape(explanation)}</div></details>'
-                               if explanation else "")
-                    st.markdown(
-                        f'<div class="memo"><div class="tl-metaphor">{html.escape(item["metaphor"])}</div>'
-                        f'<div class="tl-source">{html.escape(item["user_input"])}</div>{details}</div>',
-                        unsafe_allow_html=True,
-                    )
-                    if item["id"] in st.session_state.my_post_ids:
-                        if st.button("削除", key=f"del_{item['id']}"):
-                            try:
-                                token = st.session_state.my_post_ids[item["id"]]
-                                if not delete_post(item["id"], token):
-                                    raise RuntimeError("delete_own_post returned false")
-                                st.session_state.my_post_ids.pop(item["id"], None)
-                                st.rerun()
-                            except Exception as e:
-                                log(f"[delete] {type(e).__name__}: {e}")
-                                note("削除できませんでした。もう一度押してください。", alert=True)
+        if timeline == []:
+            note("まだ投稿がありません。最初の一行を載せてみてください。")
+        elif timeline:
+            for item in timeline:
+                explanation = (item.get("explanation") or "").strip()
+                details = (f'<details><summary>解説を読む</summary>'
+                           f'<div class="tl-explanation">{html.escape(explanation)}</div></details>'
+                           if explanation else "")
+                st.markdown(
+                    f'<div class="memo"><div class="tl-metaphor">{html.escape(item["metaphor"])}</div>'
+                    f'<div class="tl-source">{html.escape(item["user_input"])}</div>{details}</div>',
+                    unsafe_allow_html=True,
+                )
+                if item["id"] in st.session_state.my_post_ids:
+                    # IDには「#」や「:」が入るので、ボタンのkeyにはハッシュを使う
+                    button_key = "del_" + hashlib.sha1(item["id"].encode()).hexdigest()[:12]
+                    if st.button("削除", key=button_key):
+                        try:
+                            token = st.session_state.my_post_ids[item["id"]]
+                            if not delete_post(item["id"], token):
+                                raise RuntimeError("合言葉が一致しませんでした")
+                            st.session_state.my_post_ids.pop(item["id"], None)
+                            st.rerun()
+                        except Exception as e:
+                            log(f"[delete] {type(e).__name__}: {e}")
+                            note("削除できませんでした。もう一度押してください。", alert=True)
